@@ -1,0 +1,1067 @@
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0f1117;--bg2:#161922;--bg3:#1e2230;--bg4:#252a3a;
+    --border:#2a3048;--border2:#3a4260;
+    --text:#e8eaf2;--text2:#8b92b0;--text3:#5a6280;
+    --accent:#4f7bff;--accent2:#6b95ff;
+    --green:#22c984;--green2:#1a9f6a;
+    --amber:#f5a623;--red:#e8425a;
+    --purple:#a855f7;--teal:#14b8a6;
+    --font:'DM Sans',sans-serif;--mono:'DM Mono',monospace;
+  }
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;line-height:1.5}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+
+  /* Layout */
+  .shell{display:flex;height:100vh;min-height:600px;overflow:hidden}
+  .sidebar{width:220px;min-width:220px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+  .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{height:52px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
+  .content{flex:1;overflow-y:auto;padding:20px;background:var(--bg)}
+
+  /* Sidebar */
+  .logo{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+  .logo-mark{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--purple));border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;color:#fff;letter-spacing:-.5px}
+  .logo-text{font-size:15px;font-weight:600;color:var(--text);letter-spacing:-.3px}
+  .logo-text span{color:var(--accent);font-size:11px;font-weight:400;display:block;letter-spacing:.5px;margin-top:-2px}
+
+  .company-picker{padding:10px 12px;border-bottom:1px solid var(--border)}
+  .company-select{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:7px 10px;font-size:12px;font-family:var(--font);cursor:pointer;outline:none}
+  .company-select:focus{border-color:var(--accent)}
+
+  .nav{flex:1;padding:10px 0;overflow-y:auto}
+  .nav-section{padding:4px 12px;font-size:10px;font-weight:500;color:var(--text3);letter-spacing:1px;text-transform:uppercase;margin-top:8px}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:8px 16px;cursor:pointer;transition:all .15s;color:var(--text2);font-size:12.5px;border-left:2px solid transparent;margin:1px 0}
+  .nav-item:hover{background:var(--bg3);color:var(--text)}
+  .nav-item.active{background:var(--bg3);color:var(--accent);border-left-color:var(--accent)}
+  .nav-icon{width:16px;text-align:center;font-size:14px;flex-shrink:0}
+  .nav-badge{margin-left:auto;background:var(--red);color:#fff;font-size:10px;padding:1px 6px;border-radius:10px}
+
+  .sidebar-footer{padding:12px;border-top:1px solid var(--border)}
+  .user-pill{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg3);border-radius:8px;cursor:pointer}
+  .avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--purple));display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#fff;flex-shrink:0}
+  .user-info{flex:1;min-width:0}
+  .user-name{font-size:12px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .user-role{font-size:10px;color:var(--text3)}
+
+  /* Topbar */
+  .topbar-title{font-size:14px;font-weight:500;color:var(--text);flex:1}
+  .topbar-actions{display:flex;align-items:center;gap:8px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;border:none;font-family:var(--font);transition:all .15s}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{background:var(--accent2)}
+  .btn-ghost{background:var(--bg3);color:var(--text2);border:1px solid var(--border2)}
+  .btn-ghost:hover{color:var(--text);border-color:var(--border2)}
+  .topbar-search{flex:1;max-width:260px;display:flex;align-items:center;gap:8px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:0 10px;height:32px}
+  .topbar-search input{background:none;border:none;outline:none;color:var(--text);font-size:12px;flex:1;font-family:var(--font)}
+  .topbar-search input::placeholder{color:var(--text3)}
+  .notif-btn{position:relative;background:var(--bg3);border:1px solid var(--border);border-radius:6px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text2)}
+  .notif-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;background:var(--red);border-radius:50%;border:1.5px solid var(--bg2)}
+
+  /* Tabs */
+  .tabs{display:flex;gap:2px;background:var(--bg2);border-bottom:1px solid var(--border);padding:0 20px}
+  .tab{padding:10px 16px;font-size:12.5px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
+  .tab:hover{color:var(--text)}
+  .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+  /* Cards */
+  .card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px}
+  .card-sm{padding:12px}
+  .card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .card-title{font-size:13px;font-weight:500;color:var(--text)}
+  .card-sub{font-size:11px;color:var(--text3);margin-top:1px}
+  .card-action{font-size:11px;color:var(--accent);cursor:pointer}
+
+  /* Grid layouts */
+  .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+  .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+  .grid-2-1{display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:16px}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+
+  /* KPI Cards */
+  .kpi-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px}
+  .kpi-label{font-size:11px;color:var(--text3);font-weight:400;margin-bottom:6px}
+  .kpi-value{font-size:22px;font-weight:600;color:var(--text);line-height:1;letter-spacing:-.5px;font-family:var(--mono)}
+  .kpi-change{display:flex;align-items:center;gap:4px;margin-top:6px;font-size:11px}
+  .kpi-up{color:var(--green)}
+  .kpi-down{color:var(--red)}
+  .kpi-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;float:right;margin-top:-4px}
+  .kpi-icon-blue{background:rgba(79,123,255,.12);color:var(--accent)}
+  .kpi-icon-green{background:rgba(34,201,132,.12);color:var(--green)}
+  .kpi-icon-amber{background:rgba(245,166,35,.12);color:var(--amber)}
+  .kpi-icon-red{background:rgba(232,66,90,.12);color:var(--red)}
+
+  /* Status badges */
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+  .badge-green{background:rgba(34,201,132,.12);color:var(--green)}
+  .badge-amber{background:rgba(245,166,35,.12);color:var(--amber)}
+  .badge-red{background:rgba(232,66,90,.12);color:var(--red)}
+  .badge-blue{background:rgba(79,123,255,.12);color:var(--accent2)}
+  .badge-purple{background:rgba(168,85,247,.12);color:var(--purple)}
+  .badge-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+
+  /* Table */
+  .tbl{width:100%;border-collapse:collapse}
+  .tbl th{font-size:11px;font-weight:500;color:var(--text3);text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);white-space:nowrap;letter-spacing:.3px;text-transform:uppercase}
+  .tbl td{padding:10px 12px;border-bottom:1px solid var(--border);font-size:12.5px;color:var(--text2);vertical-align:middle}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl tr:hover td{background:var(--bg3)}
+  .emp-name{color:var(--text);font-weight:500}
+  .emp-id{font-size:10px;color:var(--text3);font-family:var(--mono)}
+
+  /* Payroll status progress */
+  .pay-steps{display:flex;gap:6px;align-items:center;margin-bottom:14px}
+  .pay-step{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1}
+  .pay-step-dot{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;border:2px solid var(--border)}
+  .pay-step-dot.done{background:var(--green2);border-color:var(--green);color:#fff}
+  .pay-step-dot.active{background:var(--accent);border-color:var(--accent2);color:#fff}
+  .pay-step-dot.pending{background:var(--bg3);border-color:var(--border);color:var(--text3)}
+  .pay-step-label{font-size:10px;color:var(--text3);text-align:center;line-height:1.2}
+  .pay-step-line{flex:1;height:1.5px;background:var(--border);margin-top:-16px;margin-left:-2px;margin-right:-2px}
+  .pay-step-line.done{background:var(--green)}
+  .pay-step-line.active{background:linear-gradient(90deg,var(--green),var(--border))}
+
+  /* Mini chart */
+  .chart-bar{display:flex;gap:3px;align-items:flex-end;height:50px}
+  .bar{flex:1;border-radius:3px 3px 0 0;background:var(--bg3);min-height:4px;transition:all .3s}
+  .bar.fill{background:var(--accent)}
+  .bar.fill-green{background:var(--green2)}
+  .bar.fill-amber{background:var(--amber)}
+
+  /* Attendance timeline */
+  .att-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)}
+  .att-row:last-child{border-bottom:none}
+  .att-emp{width:110px;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .att-bar-wrap{flex:1;height:18px;background:var(--bg3);border-radius:4px;position:relative;overflow:hidden}
+  .att-bar{position:absolute;top:0;height:100%;border-radius:4px}
+  .att-time{font-size:10px;color:var(--text3);width:56px;text-align:right;font-family:var(--mono)}
+
+  /* Compliance panel */
+  .comp-item{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)}
+  .comp-item:last-child{border-bottom:none}
+  .comp-label{font-size:12px;color:var(--text2)}
+  .comp-sub{font-size:10px;color:var(--text3);margin-top:1px}
+  .comp-val{font-family:var(--mono);font-size:13px;color:var(--text);text-align:right}
+  .comp-val small{display:block;font-size:10px;color:var(--text3);font-family:var(--font)}
+
+  /* Activity feed */
+  .feed-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+  .feed-item:last-child{border-bottom:none}
+  .feed-dot{width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:13px}
+  .feed-text{font-size:12px;color:var(--text2);line-height:1.5}
+  .feed-text strong{color:var(--text);font-weight:500}
+  .feed-time{font-size:10px;color:var(--text3);margin-top:2px}
+
+  /* Page views */
+  .view{display:none}
+  .view.active{display:block}
+
+  /* Section title */
+  .section-title{font-size:11px;font-weight:500;color:var(--text3);letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px}
+
+  /* Approval items */
+  .appr-item{display:flex;align-items:center;gap:10px;padding:10px;background:var(--bg3);border-radius:8px;margin-bottom:6px}
+  .appr-info{flex:1}
+  .appr-title{font-size:12.5px;color:var(--text);font-weight:500}
+  .appr-sub{font-size:11px;color:var(--text3);margin-top:1px}
+  .appr-actions{display:flex;gap:5px}
+  .mini-btn{padding:4px 10px;border-radius:5px;font-size:11px;cursor:pointer;border:none;font-family:var(--font);font-weight:500}
+  .mini-btn-green{background:rgba(34,201,132,.15);color:var(--green)}
+  .mini-btn-red{background:rgba(232,66,90,.12);color:var(--red)}
+
+  /* Formula editor */
+  .formula-box{background:var(--bg);border:1px solid var(--border2);border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:12px;color:var(--green);line-height:1.8;min-height:60px}
+  .f-keyword{color:var(--amber)}
+  .f-var{color:var(--accent2)}
+  .f-op{color:var(--text2)}
+  .f-num{color:var(--purple)}
+
+  /* Donut */
+  .donut-wrap{display:flex;align-items:center;gap:16px}
+  .donut-legend{flex:1}
+  .legend-item{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+  .legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .legend-label{font-size:11px;color:var(--text2);flex:1}
+  .legend-val{font-size:11px;color:var(--text);font-family:var(--mono)}
+
+  /* Scrollbar */
+  ::-webkit-scrollbar{width:4px;height:4px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+
+  /* Pulse dot */
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;display:inline-block;margin-right:4px}
+
+  /* Utility */
+  .flex{display:flex}.items-center{align-items:center}.gap-2{gap:8px}.gap-3{gap:12px}.mt-1{margin-top:4px}.mt-2{margin-top:8px}.mt-3{margin-top:12px}
+  .text-sm{font-size:12px}.text-xs{font-size:11px}.text-muted{color:var(--text3)}.text-accent{color:var(--accent)}.fw-5{font-weight:500}
+  .mono{font-family:var(--mono)}
+  .w-full{width:100%}
+  .divider{height:1px;background:var(--border);margin:12px 0}
+</style>
+
+<h2 class="sr-only">Paylix — Multi-company Payroll BPO SaaS Dashboard</h2>
+
+<div class="shell">
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-mark">P</div>
+      <div class="logo-text">Paylix<span>BPO PAYROLL PLATFORM</span></div>
+    </div>
+    <div class="company-picker">
+      <select class="company-select" id="company-sel" onchange="switchCompany(this.value)">
+        <option value="0">🏢 Citron Technologies Ltd</option>
+        <option value="1">🏭 Sigma Garments PLC</option>
+        <option value="2">🏦 MavenBank Financial</option>
+        <option value="3">🏥 MedCare Hospitals</option>
+      </select>
+    </div>
+    <nav class="nav">
+      <div class="nav-section">Operations</div>
+      <div class="nav-item active" onclick="showView('dashboard',this)"><span class="nav-icon">⬛</span>Dashboard</div>
+      <div class="nav-item" onclick="showView('payroll',this)"><span class="nav-icon">💳</span>Payroll Run</div>
+      <div class="nav-item" onclick="showView('employees',this)"><span class="nav-icon">👤</span>Employees</div>
+      <div class="nav-item" onclick="showView('attendance',this)"><span class="nav-icon">📊</span>Attendance</div>
+      <div class="nav-item" onclick="showView('leave',this)"><span class="nav-icon">📅</span>Leave <span class="nav-badge">4</span></div>
+      <div class="nav-section">Compliance</div>
+      <div class="nav-item" onclick="showView('compliance',this)"><span class="nav-icon">🛡</span>APIT / EPF / ETF</div>
+      <div class="nav-item" onclick="showView('formula',this)"><span class="nav-icon">⚙️</span>Rule Engine</div>
+      <div class="nav-section">Administration</div>
+      <div class="nav-item" onclick="showView('approvals',this)"><span class="nav-icon">✅</span>Approvals <span class="nav-badge">3</span></div>
+      <div class="nav-item" onclick="showView('reports',this)"><span class="nav-icon">📋</span>Reports</div>
+      <div class="nav-item" onclick="showView('audit',this)"><span class="nav-icon">🔒</span>Audit Log</div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-pill">
+        <div class="avatar">SA</div>
+        <div class="user-info">
+          <div class="user-name">Suresh Abeywarne</div>
+          <div class="user-role">Super Admin · InTalent</div>
+        </div>
+        <span style="color:var(--text3);font-size:12px">⚙️</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-title" id="page-title">Operations Dashboard</div>
+      <div class="topbar-search">
+        <span style="color:var(--text3);font-size:12px">🔍</span>
+        <input type="text" placeholder="Search employees, payslips...">
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" style="font-size:11px">📤 Export</button>
+        <button class="btn btn-primary" style="font-size:11px">＋ New Run</button>
+        <div class="notif-btn">🔔<span class="notif-dot"></span></div>
+      </div>
+    </div>
+
+    <div class="content" id="content-area">
+
+      <!-- ======= DASHBOARD VIEW ======= -->
+      <div class="view active" id="view-dashboard">
+        <div class="grid-4">
+          <div class="kpi-card">
+            <div class="flex items-center" style="justify-content:space-between">
+              <div class="kpi-label">Total Headcount</div>
+              <div class="kpi-icon kpi-icon-blue">👤</div>
+            </div>
+            <div class="kpi-value">1,247</div>
+            <div class="kpi-change kpi-up">▲ 3.2% from last month</div>
+          </div>
+          <div class="kpi-card">
+            <div class="flex items-center" style="justify-content:space-between">
+              <div class="kpi-label">Payroll This Month</div>
+              <div class="kpi-icon kpi-icon-green">💰</div>
+            </div>
+            <div class="kpi-value">42.8M</div>
+            <div class="kpi-change kpi-up">▲ LKR 42,819,500</div>
+          </div>
+          <div class="kpi-card">
+            <div class="flex items-center" style="justify-content:space-between">
+              <div class="kpi-label">Pending Approvals</div>
+              <div class="kpi-icon kpi-icon-amber">⏳</div>
+            </div>
+            <div class="kpi-value">7</div>
+            <div class="kpi-change kpi-down">▼ 3 urgent items</div>
+          </div>
+          <div class="kpi-card">
+            <div class="flex items-center" style="justify-content:space-between">
+              <div class="kpi-label">Attendance Rate</div>
+              <div class="kpi-icon kpi-icon-green">📊</div>
+            </div>
+            <div class="kpi-value">94.6%</div>
+            <div class="kpi-change kpi-up">▲ Today across all companies</div>
+          </div>
+        </div>
+
+        <div class="grid-2-1">
+          <!-- Companies overview -->
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">Client Companies</div>
+                <div class="card-sub">4 active tenants · All payrolls configured</div>
+              </div>
+              <div class="card-action">Manage →</div>
+            </div>
+            <table class="tbl">
+              <thead><tr>
+                <th>Company</th><th>Employees</th><th>Payroll Status</th><th>EPF Due</th><th>Last Run</th>
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td><span class="emp-name">Citron Technologies</span><br><span class="emp-id">CTL-001</span></td>
+                  <td>342</td>
+                  <td><span class="badge badge-green"><span class="badge-dot"></span>Processed</span></td>
+                  <td class="mono" style="font-size:12px">LKR 1.2M</td>
+                  <td class="text-xs text-muted">May 25</td>
+                </tr>
+                <tr>
+                  <td><span class="emp-name">Sigma Garments</span><br><span class="emp-id">SGA-002</span></td>
+                  <td>518</td>
+                  <td><span class="badge badge-amber"><span class="badge-dot"></span>In Review</span></td>
+                  <td class="mono" style="font-size:12px">LKR 1.8M</td>
+                  <td class="text-xs text-muted">May 24</td>
+                </tr>
+                <tr>
+                  <td><span class="emp-name">MavenBank Financial</span><br><span class="emp-id">MBF-003</span></td>
+                  <td>203</td>
+                  <td><span class="badge badge-blue"><span class="badge-dot"></span>Draft</span></td>
+                  <td class="mono" style="font-size:12px">LKR 0.9M</td>
+                  <td class="text-xs text-muted">May 22</td>
+                </tr>
+                <tr>
+                  <td><span class="emp-name">MedCare Hospitals</span><br><span class="emp-id">MCH-004</span></td>
+                  <td>184</td>
+                  <td><span class="badge badge-red"><span class="badge-dot"></span>Pending</span></td>
+                  <td class="mono" style="font-size:12px">LKR 0.7M</td>
+                  <td class="text-xs text-muted">May 20</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Activity feed -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title"><span class="live-dot"></span>Live Activity</div>
+            </div>
+            <div class="feed-item">
+              <div class="feed-dot" style="background:rgba(34,201,132,.12);color:var(--green)">✓</div>
+              <div>
+                <div class="feed-text"><strong>Citron payroll</strong> approved by client admin</div>
+                <div class="feed-time">2 min ago</div>
+              </div>
+            </div>
+            <div class="feed-item">
+              <div class="feed-dot" style="background:rgba(245,166,35,.12);color:var(--amber)">⚠</div>
+              <div>
+                <div class="feed-text"><strong>Sigma APIT</strong> Table 02 needs recalculation</div>
+                <div class="feed-time">18 min ago</div>
+              </div>
+            </div>
+            <div class="feed-item">
+              <div class="feed-dot" style="background:rgba(79,123,255,.12);color:var(--accent)">↑</div>
+              <div>
+                <div class="feed-text"><strong>K. Perera</strong> bank detail change requested (OTP sent)</div>
+                <div class="feed-time">34 min ago</div>
+              </div>
+            </div>
+            <div class="feed-item">
+              <div class="feed-dot" style="background:rgba(168,85,247,.12);color:var(--purple)">📋</div>
+              <div>
+                <div class="feed-text"><strong>MavenBank</strong> 4 leave requests pending approval</div>
+                <div class="feed-time">1h ago</div>
+              </div>
+            </div>
+            <div class="feed-item">
+              <div class="feed-dot" style="background:rgba(34,201,132,.12);color:var(--green)">👤</div>
+              <div>
+                <div class="feed-text"><strong>3 new employees</strong> onboarded via dynamic form</div>
+                <div class="feed-time">2h ago</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <!-- Payroll spend chart -->
+          <div class="card">
+            <div class="card-header">
+              <div><div class="card-title">Monthly Payroll Spend</div><div class="card-sub">All companies · LKR Millions</div></div>
+            </div>
+            <div class="chart-bar" style="height:80px;align-items:flex-end;padding:0 4px">
+              <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <div class="bar fill" style="height:52px;background:var(--bg4)"></div>
+                <div class="text-xs text-muted">Dec</div>
+              </div>
+              <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <div class="bar fill" style="height:58px;background:var(--bg4)"></div>
+                <div class="text-xs text-muted">Jan</div>
+              </div>
+              <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <div class="bar fill" style="height:62px;background:var(--bg4)"></div>
+                <div class="text-xs text-muted">Feb</div>
+              </div>
+              <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <div class="bar fill" style="height:56px;background:var(--bg4)"></div>
+                <div class="text-xs text-muted">Mar</div>
+              </div>
+              <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <div class="bar fill" style="height:64px;background:var(--bg4)"></div>
+                <div class="text-xs text-muted">Apr</div>
+              </div>
+              <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <div class="bar" style="height:68px;background:var(--accent)"></div>
+                <div class="text-xs" style="color:var(--accent)">May</div>
+              </div>
+            </div>
+            <div class="divider"></div>
+            <div class="flex gap-3">
+              <div><div class="text-xs text-muted">Gross</div><div class="text-sm fw-5 mono">LKR 42.8M</div></div>
+              <div><div class="text-xs text-muted">EPF Total</div><div class="text-sm fw-5 mono">LKR 4.6M</div></div>
+              <div><div class="text-xs text-muted">ETF Total</div><div class="text-sm fw-5 mono">LKR 1.3M</div></div>
+              <div><div class="text-xs text-muted">APIT Total</div><div class="text-sm fw-5 mono">LKR 2.1M</div></div>
+            </div>
+          </div>
+
+          <!-- Headcount by dept -->
+          <div class="card">
+            <div class="card-header">
+              <div><div class="card-title">Headcount by Category</div><div class="card-sub">Citron Technologies · Active</div></div>
+            </div>
+            <div class="donut-wrap">
+              <svg width="90" height="90" viewBox="0 0 90 90">
+                <circle cx="45" cy="45" r="32" fill="none" stroke="#1e2230" stroke-width="14"/>
+                <circle cx="45" cy="45" r="32" fill="none" stroke="#4f7bff" stroke-width="14" stroke-dasharray="88 113" stroke-dashoffset="0" stroke-linecap="butt"/>
+                <circle cx="45" cy="45" r="32" fill="none" stroke="#22c984" stroke-width="14" stroke-dasharray="57 113" stroke-dashoffset="-88" stroke-linecap="butt"/>
+                <circle cx="45" cy="45" r="32" fill="none" stroke="#f5a623" stroke-width="14" stroke-dasharray="35 113" stroke-dashoffset="-145" stroke-linecap="butt"/>
+                <circle cx="45" cy="45" r="32" fill="none" stroke="#a855f7" stroke-width="14" stroke-dasharray="21 113" stroke-dashoffset="-180" stroke-linecap="butt"/>
+                <text x="45" y="49" text-anchor="middle" fill="#e8eaf2" font-size="14" font-weight="600" font-family="DM Mono,monospace">342</text>
+              </svg>
+              <div class="donut-legend">
+                <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div><div class="legend-label">Engineering</div><div class="legend-val">138</div></div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div><div class="legend-label">Operations</div><div class="legend-val">89</div></div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div><div class="legend-label">Sales</div><div class="legend-val">55</div></div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--purple)"></div><div class="legend-label">HR & Admin</div><div class="legend-val">34</div></div>
+                <div class="legend-item"><div class="legend-dot" style="background:var(--text3)"></div><div class="legend-label">Others</div><div class="legend-val">26</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======= PAYROLL VIEW ======= -->
+      <div class="view" id="view-payroll">
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Payroll Run — May 2026</div>
+              <div class="card-sub">Citron Technologies Ltd · 342 employees · Period: 01–31 May 2026</div>
+            </div>
+            <span class="badge badge-amber"><span class="badge-dot"></span>Draft</span>
+          </div>
+          <div class="pay-steps">
+            <div class="pay-step">
+              <div class="pay-step-dot done">✓</div>
+              <div class="pay-step-label">Attendance<br>Finalized</div>
+            </div>
+            <div class="pay-step-line done"></div>
+            <div class="pay-step">
+              <div class="pay-step-dot done">✓</div>
+              <div class="pay-step-label">Leave<br>Processed</div>
+            </div>
+            <div class="pay-step-line done"></div>
+            <div class="pay-step">
+              <div class="pay-step-dot active">●</div>
+              <div class="pay-step-label">Payroll<br>Calculated</div>
+            </div>
+            <div class="pay-step-line active"></div>
+            <div class="pay-step">
+              <div class="pay-step-dot pending">4</div>
+              <div class="pay-step-label">HR<br>Review</div>
+            </div>
+            <div class="pay-step-line"></div>
+            <div class="pay-step">
+              <div class="pay-step-dot pending">5</div>
+              <div class="pay-step-label">Client<br>Approval</div>
+            </div>
+            <div class="pay-step-line"></div>
+            <div class="pay-step">
+              <div class="pay-step-dot pending">6</div>
+              <div class="pay-step-label">Bank<br>File</div>
+            </div>
+            <div class="pay-step-line"></div>
+            <div class="pay-step">
+              <div class="pay-step-dot pending">7</div>
+              <div class="pay-step-label">Payslip<br>Release</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="kpi-card"><div class="kpi-label">Gross Payroll</div><div class="kpi-value" style="font-size:18px">12,482,500</div><div class="kpi-change" style="color:var(--text3)">LKR · 342 employees</div></div>
+          <div class="kpi-card"><div class="kpi-label">Total Deductions</div><div class="kpi-value" style="font-size:18px">2,916,300</div><div class="kpi-change" style="color:var(--text3)">EPF + ETF + APIT + Loans</div></div>
+          <div class="kpi-card"><div class="kpi-label">Net Payable</div><div class="kpi-value" style="font-size:18px">9,566,200</div><div class="kpi-change kpi-green" style="color:var(--green)">Ready for bank file</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><div class="card-title">Payroll Register — Sample</div><div class="card-action">View All 342 →</div></div>
+          <table class="tbl">
+            <thead><tr>
+              <th>Employee</th><th>Basic</th><th>Allowances</th><th>OT</th><th>Gross</th><th>EPF (8%)</th><th>APIT</th><th>Net Pay</th><th>Status</th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td><span class="emp-name">Kavinda Perera</span><br><span class="emp-id">EMP-0042</span></td>
+                <td class="mono" style="font-size:12px">85,000</td>
+                <td class="mono" style="font-size:12px">12,500</td>
+                <td class="mono" style="font-size:12px">4,200</td>
+                <td class="mono" style="font-size:12px;color:var(--text)">101,700</td>
+                <td class="mono" style="font-size:12px;color:var(--amber)">8,136</td>
+                <td class="mono" style="font-size:12px;color:var(--red)">3,400</td>
+                <td class="mono" style="font-size:12px;color:var(--green)">90,164</td>
+                <td><span class="badge badge-green" style="font-size:10px">✓ OK</span></td>
+              </tr>
+              <tr>
+                <td><span class="emp-name">Nimali Silva</span><br><span class="emp-id">EMP-0087</span></td>
+                <td class="mono" style="font-size:12px">65,000</td>
+                <td class="mono" style="font-size:12px">8,000</td>
+                <td class="mono" style="font-size:12px">0</td>
+                <td class="mono" style="font-size:12px;color:var(--text)">73,000</td>
+                <td class="mono" style="font-size:12px;color:var(--amber)">5,840</td>
+                <td class="mono" style="font-size:12px;color:var(--red)">1,250</td>
+                <td class="mono" style="font-size:12px;color:var(--green)">65,910</td>
+                <td><span class="badge badge-green" style="font-size:10px">✓ OK</span></td>
+              </tr>
+              <tr>
+                <td><span class="emp-name">Ranjith Fernando</span><br><span class="emp-id">EMP-0103</span></td>
+                <td class="mono" style="font-size:12px">120,000</td>
+                <td class="mono" style="font-size:12px">18,000</td>
+                <td class="mono" style="font-size:12px">9,600</td>
+                <td class="mono" style="font-size:12px;color:var(--text)">147,600</td>
+                <td class="mono" style="font-size:12px;color:var(--amber)">11,808</td>
+                <td class="mono" style="font-size:12px;color:var(--red)">8,900</td>
+                <td class="mono" style="font-size:12px;color:var(--green)">126,892</td>
+                <td><span class="badge badge-amber" style="font-size:10px">⚠ Review</span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="mt-3 flex gap-2">
+            <button class="btn btn-ghost">Recalculate All</button>
+            <button class="btn btn-ghost">Export CSV</button>
+            <button class="btn btn-primary" style="margin-left:auto">Submit for HR Review →</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======= EMPLOYEES VIEW ======= -->
+      <div class="view" id="view-employees">
+        <div class="flex gap-2 items-center" style="margin-bottom:14px">
+          <input type="text" placeholder="Search by name, NIC, department..." style="flex:1;background:var(--bg2);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:8px 12px;font-size:12px;outline:none;font-family:var(--font)">
+          <select style="background:var(--bg2);border:1px solid var(--border2);border-radius:6px;color:var(--text2);padding:8px 12px;font-size:12px;outline:none">
+            <option>All Departments</option><option>Engineering</option><option>Operations</option><option>Sales</option>
+          </select>
+          <select style="background:var(--bg2);border:1px solid var(--border2);border-radius:6px;color:var(--text2);padding:8px 12px;font-size:12px;outline:none">
+            <option>All Types</option><option>Permanent</option><option>Contract</option><option>Probation</option>
+          </select>
+          <button class="btn btn-primary">＋ Onboard Employee</button>
+        </div>
+        <div class="card">
+          <table class="tbl">
+            <thead><tr>
+              <th>Employee</th><th>Department</th><th>Type</th><th>EPF No.</th><th>Salary</th><th>Bank</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td><div class="flex items-center gap-2"><div class="avatar" style="width:30px;height:30px;font-size:10px">KP</div><div><span class="emp-name">Kavinda Perera</span><br><span class="emp-id">EMP-0042 · NIC 199012345V</span></div></div></td>
+                <td>Engineering</td>
+                <td><span class="badge badge-blue">Permanent</span></td>
+                <td class="mono" style="font-size:11px">EPF/9234</td>
+                <td class="mono" style="font-size:12px">LKR 85,000</td>
+                <td class="text-xs text-muted">HNB ****4521</td>
+                <td><span class="badge badge-green"><span class="badge-dot"></span>Active</span></td>
+                <td><span class="text-accent" style="font-size:11px;cursor:pointer">View →</span></td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2"><div class="avatar" style="width:30px;height:30px;font-size:10px;background:linear-gradient(135deg,var(--green2),var(--teal))">NS</div><div><span class="emp-name">Nimali Silva</span><br><span class="emp-id">EMP-0087 · NIC 199534218V</span></div></div></td>
+                <td>Operations</td>
+                <td><span class="badge badge-purple">Contract</span></td>
+                <td class="mono" style="font-size:11px">EPF/7821</td>
+                <td class="mono" style="font-size:12px">LKR 65,000</td>
+                <td class="text-xs text-muted">Sampath ****8871</td>
+                <td><span class="badge badge-green"><span class="badge-dot"></span>Active</span></td>
+                <td><span class="text-accent" style="font-size:11px;cursor:pointer">View →</span></td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2"><div class="avatar" style="width:30px;height:30px;font-size:10px;background:linear-gradient(135deg,var(--amber),#e05a00)">RF</div><div><span class="emp-name">Ranjith Fernando</span><br><span class="emp-id">EMP-0103 · NIC 198567023V</span></div></div></td>
+                <td>Sales</td>
+                <td><span class="badge badge-blue">Permanent</span></td>
+                <td class="mono" style="font-size:11px">EPF/5519</td>
+                <td class="mono" style="font-size:12px">LKR 120,000</td>
+                <td class="text-xs text-muted">BOC ****2213</td>
+                <td><span class="badge badge-amber"><span class="badge-dot"></span>Probation</span></td>
+                <td><span class="text-accent" style="font-size:11px;cursor:pointer">View →</span></td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2"><div class="avatar" style="width:30px;height:30px;font-size:10px;background:linear-gradient(135deg,var(--purple),#6d28d9)">SD</div><div><span class="emp-name">Sachini De Alwis</span><br><span class="emp-id">EMP-0119 · NIC 200145678V</span></div></div></td>
+                <td>HR & Admin</td>
+                <td><span class="badge badge-blue">Permanent</span></td>
+                <td class="mono" style="font-size:11px">EPF/4402</td>
+                <td class="mono" style="font-size:12px">LKR 72,000</td>
+                <td class="text-xs text-muted">Commercial ****9944</td>
+                <td><span class="badge badge-red"><span class="badge-dot"></span>Notice Period</span></td>
+                <td><span class="text-accent" style="font-size:11px;cursor:pointer">View →</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ======= ATTENDANCE VIEW ======= -->
+      <div class="view" id="view-attendance">
+        <div class="grid-3" style="margin-bottom:16px">
+          <div class="kpi-card"><div class="kpi-label">Present Today</div><div class="kpi-value" style="font-size:18px">318</div><div class="kpi-change kpi-up">▲ 94.6% of 342</div></div>
+          <div class="kpi-card"><div class="kpi-label">Late Arrivals</div><div class="kpi-value" style="font-size:18px">12</div><div class="kpi-change kpi-down">▼ 3.5% · No-pay applied: 4</div></div>
+          <div class="kpi-card"><div class="kpi-label">Hikvision Devices</div><div class="kpi-value" style="font-size:18px">8</div><div class="kpi-change kpi-up" style="color:var(--green)"><span class="live-dot"></span>All online · Last sync 2m ago</div></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Today's Attendance Timeline</div>
+            <div class="flex gap-2">
+              <span class="badge badge-green">On Time</span>
+              <span class="badge badge-amber">Late</span>
+              <span class="badge badge-red">Absent</span>
+            </div>
+          </div>
+          <div class="att-row" style="border-bottom:none;padding-bottom:4px;margin-bottom:4px">
+            <div class="att-emp" style="color:var(--text3);font-size:11px">Employee</div>
+            <div style="flex:1;display:flex;justify-content:space-between;font-size:10px;color:var(--text3)">
+              <span>08:00</span><span>10:00</span><span>12:00</span><span>14:00</span><span>17:00</span>
+            </div>
+            <div class="att-time">Hours</div>
+          </div>
+          <div class="att-row">
+            <div class="att-emp">K. Perera</div>
+            <div class="att-bar-wrap"><div class="att-bar" style="left:2%;width:75%;background:var(--green2);opacity:.7"></div></div>
+            <div class="att-time">8.5h</div>
+          </div>
+          <div class="att-row">
+            <div class="att-emp">N. Silva</div>
+            <div class="att-bar-wrap"><div class="att-bar" style="left:6%;width:70%;background:var(--amber);opacity:.7"></div></div>
+            <div class="att-time">8.0h ⚠</div>
+          </div>
+          <div class="att-row">
+            <div class="att-emp">R. Fernando</div>
+            <div class="att-bar-wrap"><div class="att-bar" style="left:2%;width:80%;background:var(--green2);opacity:.7"></div></div>
+            <div class="att-time">9.0h OT</div>
+          </div>
+          <div class="att-row">
+            <div class="att-emp">S. De Alwis</div>
+            <div class="att-bar-wrap"><div class="att-bar" style="left:0%;width:0%;background:var(--red);opacity:.7"></div><span style="position:absolute;left:8px;top:2px;font-size:10px;color:var(--red)">Absent — Leave Applied</span></div>
+            <div class="att-time">—</div>
+          </div>
+          <div class="att-row">
+            <div class="att-emp">D. Jayaratne</div>
+            <div class="att-bar-wrap"><div class="att-bar" style="left:2%;width:73%;background:var(--green2);opacity:.7"></div></div>
+            <div class="att-time">8.3h</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======= LEAVE VIEW ======= -->
+      <div class="view" id="view-leave">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header"><div class="card-title">Pending Leave Approvals</div><span class="badge badge-red">4 Pending</span></div>
+            <div class="appr-item">
+              <div class="avatar" style="width:34px;height:34px;font-size:11px;flex-shrink:0">KP</div>
+              <div class="appr-info">
+                <div class="appr-title">Kavinda Perera · Annual Leave</div>
+                <div class="appr-sub">28 May – 30 May · 3 days · Replacement: N. Silva ✓</div>
+              </div>
+              <div class="appr-actions">
+                <button class="mini-btn mini-btn-green">✓ Approve</button>
+                <button class="mini-btn mini-btn-red">✗</button>
+              </div>
+            </div>
+            <div class="appr-item">
+              <div class="avatar" style="width:34px;height:34px;font-size:11px;flex-shrink:0;background:linear-gradient(135deg,var(--amber),#e05a00)">RF</div>
+              <div class="appr-info">
+                <div class="appr-title">Ranjith Fernando · Medical Leave</div>
+                <div class="appr-sub">26 May · 1 day · Medical cert. uploaded</div>
+              </div>
+              <div class="appr-actions">
+                <button class="mini-btn mini-btn-green">✓ Approve</button>
+                <button class="mini-btn mini-btn-red">✗</button>
+              </div>
+            </div>
+            <div class="appr-item">
+              <div class="avatar" style="width:34px;height:34px;font-size:11px;flex-shrink:0;background:linear-gradient(135deg,var(--teal),var(--green2))">DK</div>
+              <div class="appr-info">
+                <div class="appr-title">Dinesh Kumara · Half Day</div>
+                <div class="appr-sub">27 May AM · Casual leave balance: 4.5 days</div>
+              </div>
+              <div class="appr-actions">
+                <button class="mini-btn mini-btn-green">✓ Approve</button>
+                <button class="mini-btn mini-btn-red">✗</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><div class="card-title">Leave Balances — K. Perera</div></div>
+            <div class="comp-item">
+              <div><div class="comp-label">Annual Leave</div><div class="comp-sub">Carry forward: 3 days</div></div>
+              <div class="comp-val">14 <small>remaining / 21</small></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">Casual Leave</div><div class="comp-sub">No carry forward</div></div>
+              <div class="comp-val">5 <small>remaining / 7</small></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">Medical Leave</div><div class="comp-sub">Certified required >3 days</div></div>
+              <div class="comp-val">12 <small>remaining / 14</small></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">No-Pay Days</div><div class="comp-sub">Applied in payroll automatically</div></div>
+              <div class="comp-val" style="color:var(--red)">0 <small>this month</small></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======= COMPLIANCE VIEW ======= -->
+      <div class="view" id="view-compliance">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header"><div class="card-title">APIT Configuration</div><div class="card-sub">IRD 2025/26 · Table selection</div></div>
+            <div class="comp-item">
+              <div><div class="comp-label">Table Type</div><div class="comp-sub">Primary employment</div></div>
+              <div><select style="background:var(--bg3);border:1px solid var(--border2);border-radius:5px;color:var(--text);padding:4px 8px;font-size:12px;outline:none">
+                <option>Table 01 — Primary</option><option>Table 02 — Secondary</option><option>Table 03 — Lump Sum</option>
+              </select></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">Tax Year</div><div class="comp-sub">Financial year</div></div>
+              <div class="comp-val">2025 / 26</div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">Tax-Free Threshold</div><div class="comp-sub">Per annum — IRD approved</div></div>
+              <div class="comp-val">LKR 1.2M <small>/year</small></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">Tax-on-Tax</div><div class="comp-sub">Gross-up applicable</div></div>
+              <div class="comp-val"><span class="badge badge-green">Enabled</span></div>
+            </div>
+            <div class="divider"></div>
+            <div class="section-title">Slab Preview — Table 01</div>
+            <table class="tbl" style="font-size:11px">
+              <thead><tr><th>Income Band (LKR)</th><th>Rate</th><th>Cumulative Tax</th></tr></thead>
+              <tbody>
+                <tr><td>0 – 1,200,000</td><td class="mono">0%</td><td class="mono">—</td></tr>
+                <tr><td>1,200,001 – 1,800,000</td><td class="mono">6%</td><td class="mono">36,000</td></tr>
+                <tr><td>1,800,001 – 3,000,000</td><td class="mono">12%</td><td class="mono">180,000</td></tr>
+                <tr><td>Above 3,000,000</td><td class="mono">18%</td><td class="mono">+</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <div class="card-header"><div class="card-title">EPF / ETF Rates</div><div class="card-sub">Configurable per company</div></div>
+            <div class="comp-item">
+              <div><div class="comp-label">EPF — Employee</div><div class="comp-sub">Deducted from gross</div></div>
+              <div class="comp-val">8% <small>of EPF eligible</small></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">EPF — Employer</div><div class="comp-sub">Company contribution</div></div>
+              <div class="comp-val">12% <small>of EPF eligible</small></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">ETF — Employer</div><div class="comp-sub">ETF Act requirement</div></div>
+              <div class="comp-val">3% <small>of ETF eligible</small></div>
+            </div>
+            <div class="divider"></div>
+            <div class="section-title">May 2026 Statutory Summary</div>
+            <div class="comp-item">
+              <div><div class="comp-label">Total EPF Contribution</div></div>
+              <div class="comp-val">LKR 2,496,500 <small>Employee + Employer</small></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">Total ETF Contribution</div></div>
+              <div class="comp-val">LKR 374,475 <small>Employer only</small></div>
+            </div>
+            <div class="comp-item">
+              <div><div class="comp-label">Total APIT Withheld</div></div>
+              <div class="comp-val">LKR 623,200 <small>Remit to IRD by 15th</small></div>
+            </div>
+            <div class="mt-3">
+              <button class="btn btn-ghost w-full" style="justify-content:center">📋 Generate EPF / ETF Reports</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======= FORMULA / RULE ENGINE VIEW ======= -->
+      <div class="view" id="view-formula">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <div><div class="card-title">Payroll Rule Engine</div><div class="card-sub">Formula-based configurable rules</div></div>
+              <button class="btn btn-primary" style="font-size:11px">＋ New Rule</button>
+            </div>
+            <div style="margin-bottom:10px">
+              <div class="section-title">OT Calculation Formula</div>
+              <div class="formula-box">
+                <span class="f-keyword">IF</span> <span class="f-var">weekly_hours</span> <span class="f-op">&gt;</span> <span class="f-num">45</span> <span class="f-keyword">THEN</span><br>
+                &nbsp;&nbsp;<span class="f-var">ot_hours</span> <span class="f-op">=</span> <span class="f-var">total_hours</span> <span class="f-op">-</span> <span class="f-num">45</span><br>
+                &nbsp;&nbsp;<span class="f-var">ot_rate</span> <span class="f-op">=</span> <span class="f-var">hourly_rate</span> <span class="f-op">×</span> <span class="f-num">1.5</span><br>
+                &nbsp;&nbsp;<span class="f-var">ot_pay</span> <span class="f-op">=</span> <span class="f-var">ot_hours</span> <span class="f-op">×</span> <span class="f-var">ot_rate</span><br>
+                <span class="f-keyword">ELSE</span> <span class="f-var">ot_pay</span> <span class="f-op">=</span> <span class="f-num">0</span>
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div class="section-title">No-Pay Deduction</div>
+              <div class="formula-box">
+                <span class="f-var">daily_rate</span> <span class="f-op">=</span> <span class="f-var">basic_salary</span> <span class="f-op">/</span> <span class="f-num">26</span><br>
+                <span class="f-var">no_pay</span> <span class="f-op">=</span> <span class="f-var">daily_rate</span> <span class="f-op">×</span> <span class="f-var">no_pay_days</span><br>
+                <span class="f-var">gross</span> <span class="f-op">=</span> <span class="f-var">basic</span> <span class="f-op">-</span> <span class="f-var">no_pay</span> <span class="f-op">+</span> <span class="f-var">allowances</span>
+              </div>
+            </div>
+            <div>
+              <div class="section-title">Night Shift Allowance</div>
+              <div class="formula-box">
+                <span class="f-keyword">IF</span> <span class="f-var">shift.type</span> <span class="f-op">==</span> <span class="f-var">"NIGHT"</span> <span class="f-keyword">THEN</span><br>
+                &nbsp;&nbsp;<span class="f-var">night_allowance</span> <span class="f-op">=</span> <span class="f-var">basic</span> <span class="f-op">×</span> <span class="f-num">0.15</span><br>
+                <span class="f-keyword">ELSE IF</span> <span class="f-var">shift.type</span> <span class="f-op">==</span> <span class="f-var">"EVENING"</span> <span class="f-keyword">THEN</span><br>
+                &nbsp;&nbsp;<span class="f-var">night_allowance</span> <span class="f-op">=</span> <span class="f-var">basic</span> <span class="f-op">×</span> <span class="f-num">0.08</span>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><div class="card-title">Configured Rules</div><div class="card-sub">12 active rules · Citron Technologies</div></div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="appr-item" style="margin:0">
+                <div style="font-size:16px">💰</div>
+                <div class="appr-info"><div class="appr-title">Salary Formula</div><div class="appr-sub">Basic + Allowances − No-pay − Loans</div></div>
+                <span class="badge badge-green">Active</span>
+              </div>
+              <div class="appr-item" style="margin:0">
+                <div style="font-size:16px">⏱</div>
+                <div class="appr-info"><div class="appr-title">OT Rule — 1.5x</div><div class="appr-sub">Shop & Office Act · >45h/week</div></div>
+                <span class="badge badge-green">Active</span>
+              </div>
+              <div class="appr-item" style="margin:0">
+                <div style="font-size:16px">🌙</div>
+                <div class="appr-info"><div class="appr-title">Night Shift Allowance</div><div class="appr-sub">15% / 8% of basic by shift type</div></div>
+                <span class="badge badge-green">Active</span>
+              </div>
+              <div class="appr-item" style="margin:0">
+                <div style="font-size:16px">📅</div>
+                <div class="appr-info"><div class="appr-title">No-Pay Calculation</div><div class="appr-sub">Daily rate = Basic / 26 working days</div></div>
+                <span class="badge badge-green">Active</span>
+              </div>
+              <div class="appr-item" style="margin:0">
+                <div style="font-size:16px">🏖</div>
+                <div class="appr-info"><div class="appr-title">Public Holiday OT</div><div class="appr-sub">2x rate for gazetted holidays</div></div>
+                <span class="badge badge-green">Active</span>
+              </div>
+              <div class="appr-item" style="margin:0">
+                <div style="font-size:16px">🍽</div>
+                <div class="appr-info"><div class="appr-title">Meal Allowance</div><div class="appr-sub">LKR 500/day if shift >8h</div></div>
+                <span class="badge badge-amber">Pending</span>
+              </div>
+              <div class="appr-item" style="margin:0">
+                <div style="font-size:16px">🏦</div>
+                <div class="appr-info"><div class="appr-title">Loan Deduction</div><div class="appr-sub">Fixed EMI from net pay</div></div>
+                <span class="badge badge-green">Active</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======= APPROVALS VIEW ======= -->
+      <div class="view" id="view-approvals">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Pending Approvals</div><span class="badge badge-red">3 Urgent</span></div>
+          <div class="appr-item" style="margin-bottom:8px;border:1px solid rgba(232,66,90,.2);border-radius:8px">
+            <div class="avatar" style="background:rgba(232,66,90,.15);color:var(--red);font-size:16px;width:36px;height:36px">🔒</div>
+            <div class="appr-info">
+              <div class="appr-title">Bank Detail Change — K. Perera (EMP-0042)</div>
+              <div class="appr-sub">Requested: 26 May 09:41 · OTP verification required · HNB → Sampath Bank ****4421</div>
+            </div>
+            <div class="appr-actions">
+              <button class="mini-btn mini-btn-green">Send OTP & Approve</button>
+              <button class="mini-btn mini-btn-red">Reject</button>
+            </div>
+          </div>
+          <div class="appr-item" style="margin-bottom:8px">
+            <div class="avatar" style="background:rgba(245,166,35,.12);color:var(--amber);font-size:16px;width:36px;height:36px">💳</div>
+            <div class="appr-info">
+              <div class="appr-title">Payroll Approval — MavenBank Financial · May 2026</div>
+              <div class="appr-sub">203 employees · LKR 8.4M net · Awaiting client admin sign-off</div>
+            </div>
+            <div class="appr-actions">
+              <button class="mini-btn mini-btn-green">Approve & Lock</button>
+              <button class="mini-btn mini-btn-red">Return</button>
+            </div>
+          </div>
+          <div class="appr-item">
+            <div class="avatar" style="background:rgba(79,123,255,.12);color:var(--accent);font-size:16px;width:36px;height:36px">📋</div>
+            <div class="appr-info">
+              <div class="appr-title">Expense Claim — R. Fernando · LKR 12,500</div>
+              <div class="appr-sub">3 bills uploaded · Original handover: Pending · Finance verification required</div>
+            </div>
+            <div class="appr-actions">
+              <button class="mini-btn mini-btn-green">Approve</button>
+              <button class="mini-btn mini-btn-red">Reject</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======= REPORTS VIEW ======= -->
+      <div class="view" id="view-reports">
+        <div class="grid-3">
+          <div class="card" style="cursor:pointer" onclick="">
+            <div style="font-size:24px;margin-bottom:8px">📄</div>
+            <div class="card-title">Payroll Summary Report</div>
+            <div class="card-sub mt-1">Monthly · All companies · PDF / Excel</div>
+            <button class="btn btn-ghost w-full mt-3" style="justify-content:center;font-size:11px">Generate →</button>
+          </div>
+          <div class="card" style="cursor:pointer">
+            <div style="font-size:24px;margin-bottom:8px">🏛</div>
+            <div class="card-title">EPF / ETF Contribution Report</div>
+            <div class="card-sub mt-1">IRD format · Employee-wise · Bank file</div>
+            <button class="btn btn-ghost w-full mt-3" style="justify-content:center;font-size:11px">Generate →</button>
+          </div>
+          <div class="card" style="cursor:pointer">
+            <div style="font-size:24px;margin-bottom:8px">📊</div>
+            <div class="card-title">APIT Workings Report</div>
+            <div class="card-sub mt-1">Table 01–08 · Tax schedules · IRD</div>
+            <button class="btn btn-ghost w-full mt-3" style="justify-content:center;font-size:11px">Generate →</button>
+          </div>
+          <div class="card" style="cursor:pointer">
+            <div style="font-size:24px;margin-bottom:8px">🕐</div>
+            <div class="card-title">OT & Attendance Report</div>
+            <div class="card-sub mt-1">Exception report · Hikvision data</div>
+            <button class="btn btn-ghost w-full mt-3" style="justify-content:center;font-size:11px">Generate →</button>
+          </div>
+          <div class="card" style="cursor:pointer">
+            <div style="font-size:24px;margin-bottom:8px">🏦</div>
+            <div class="card-title">Bank Transfer File</div>
+            <div class="card-sub mt-1">BOC / HNB / Sampath / Commercial</div>
+            <button class="btn btn-ghost w-full mt-3" style="justify-content:center;font-size:11px">Generate →</button>
+          </div>
+          <div class="card" style="cursor:pointer">
+            <div style="font-size:24px;margin-bottom:8px">📅</div>
+            <div class="card-title">Leave & No-Pay Report</div>
+            <div class="card-sub mt-1">Monthly · Department-wise</div>
+            <button class="btn btn-ghost w-full mt-3" style="justify-content:center;font-size:11px">Generate →</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======= AUDIT LOG VIEW ======= -->
+      <div class="view" id="view-audit">
+        <div class="card">
+          <div class="card-header">
+            <div><div class="card-title">Audit Trail</div><div class="card-sub">Non-editable · All sensitive actions logged · SOC-2 aligned</div></div>
+            <div class="flex gap-2">
+              <select style="background:var(--bg3);border:1px solid var(--border2);border-radius:5px;color:var(--text);padding:5px 8px;font-size:11px;outline:none">
+                <option>All Actions</option><option>Payroll Changes</option><option>Bank Changes</option><option>Login Events</option>
+              </select>
+              <button class="btn btn-ghost" style="font-size:11px">Export Log</button>
+            </div>
+          </div>
+          <table class="tbl">
+            <thead><tr><th>Timestamp</th><th>User</th><th>Action</th><th>Entity</th><th>IP Address</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="mono text-xs">2026-05-26 09:41:22</td>
+                <td><span class="emp-name">Suresh A.</span><br><span class="emp-id">Super Admin</span></td>
+                <td><span class="badge badge-red">Bank Detail Change</span></td>
+                <td class="text-xs">EMP-0042 · K. Perera</td>
+                <td class="mono text-xs">192.168.1.42</td>
+                <td><span class="badge badge-amber">OTP Pending</span></td>
+              </tr>
+              <tr>
+                <td class="mono text-xs">2026-05-26 09:22:05</td>
+                <td><span class="emp-name">Citron Admin</span><br><span class="emp-id">Client Admin</span></td>
+                <td><span class="badge badge-green">Payroll Approved</span></td>
+                <td class="text-xs">May 2026 · 342 employees</td>
+                <td class="mono text-xs">10.0.0.15</td>
+                <td><span class="badge badge-green">Success</span></td>
+              </tr>
+              <tr>
+                <td class="mono text-xs">2026-05-26 08:55:14</td>
+                <td><span class="emp-name">Nimali S.</span><br><span class="emp-id">HR User</span></td>
+                <td><span class="badge badge-blue">Payslip Viewed</span></td>
+                <td class="text-xs">EMP-0087 · Own payslip</td>
+                <td class="mono text-xs">203.94.12.88</td>
+                <td><span class="badge badge-green">Success</span></td>
+              </tr>
+              <tr>
+                <td class="mono text-xs">2026-05-26 08:30:01</td>
+                <td><span class="emp-name">Suresh A.</span><br><span class="emp-id">Super Admin</span></td>
+                <td><span class="badge badge-purple">APIT Recalculated</span></td>
+                <td class="text-xs">Sigma · May 2026 · Table 02</td>
+                <td class="mono text-xs">192.168.1.42</td>
+                <td><span class="badge badge-green">Success</span></td>
+              </tr>
+              <tr>
+                <td class="mono text-xs">2026-05-25 18:12:44</td>
+                <td><span class="emp-name">Unknown</span><br><span class="emp-id">—</span></td>
+                <td><span class="badge badge-red">Failed Login</span></td>
+                <td class="text-xs">admin@citron.lk · 3 attempts</td>
+                <td class="mono text-xs">45.33.12.201</td>
+                <td><span class="badge badge-red">Blocked</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+const companies = [
+  {name:'Citron Technologies Ltd',emp:342},
+  {name:'Sigma Garments PLC',emp:518},
+  {name:'MavenBank Financial',emp:203},
+  {name:'MedCare Hospitals',emp:184}
+];
+
+function showView(id, el) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const v = document.getElementById('view-'+id);
+  if(v) v.classList.add('active');
+  if(el) el.classList.add('active');
+  const titles = {
+    dashboard:'Operations Dashboard',payroll:'Payroll Run — May 2026',
+    employees:'Employee Master',attendance:'Attendance & Hikvision',
+    leave:'Leave Management',compliance:'APIT / EPF / ETF Compliance',
+    formula:'Payroll Rule Engine',approvals:'Pending Approvals',
+    reports:'Reports & Statutory Filings',audit:'Audit Log'
+  };
+  document.getElementById('page-title').textContent = titles[id] || id;
+}
+
+function switchCompany(idx) {
+  const c = companies[idx];
+  if(c) {
+    const sub = document.querySelector('.card-sub');
+    // Just a visual indicator for demo
+  }
+}
+</script>
