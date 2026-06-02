@@ -48,7 +48,7 @@ export default function AppLayout({ children }) {
     );
   }
 
-  const title = PAGE_TITLES[router.pathname] || "Paylix";
+  const title = PAGE_TITLES[router.pathname] || "AbunthraHR";
 
   return (
     <div style={{ display: "flex", height: "100vh", background: "var(--bg)", overflow: "hidden" }}>

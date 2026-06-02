@@ -42,6 +42,7 @@ Paylix/
 | Celery Worker | — | Background task processor |
 | Celery Beat | — | Scheduled jobs |
 | Flower | 5555 | Celery monitoring UI |
+| SonarQube | 9000 | Static code analysis |
 
 ---
 
@@ -236,6 +237,68 @@ celery -A app.celery_app worker --loglevel=debug
 - [ ] Configure S3 for file storage (payslip PDFs, bank files)
 - [ ] Review CORS origins
 - [ ] Enable Flower authentication
+
+---
+
+## Code Quality — SonarQube
+
+SonarQube runs as a Docker service on port **9000** and performs static analysis on both the Python backend and Next.js frontend.
+
+### Start SonarQube
+
+```bash
+docker compose up -d sonarqube
+```
+
+First boot takes ~60 seconds. Open **http://localhost:9000** and log in with `admin` / `admin` (you'll be prompted to change the password).
+
+### Generate a token
+
+1. Go to **My Account → Security → Generate Tokens**
+2. Name it `paylix-scan`, type **Global Analysis Token**
+3. Copy the token
+
+### Configure project files
+
+Paste the token into both property files:
+
+```bash
+# backend/sonar-project.properties
+sonar.token=<your-token>
+
+# frontend/sonar-project.properties
+sonar.token=<your-token>
+```
+
+### Run a scan
+
+Install the [SonarScanner CLI](https://docs.sonarsource.com/sonarqube/latest/analyzing-source-code/scanners/sonarscanner/) once, then:
+
+```bash
+# Scan the backend
+cd backend
+sonar-scanner
+
+# Scan the frontend
+cd frontend
+sonar-scanner
+```
+
+Results appear in the SonarQube dashboard at **http://localhost:9000**.
+
+### System requirement
+
+SonarQube needs a higher virtual memory limit on Linux/WSL. Run once:
+
+```bash
+# Linux / WSL
+sudo sysctl -w vm.max_map_count=524288
+sudo sysctl -w fs.file-max=131072
+
+# Persist across reboots — add to /etc/sysctl.conf:
+vm.max_map_count=524288
+fs.file-max=131072
+```
 
 ---
 

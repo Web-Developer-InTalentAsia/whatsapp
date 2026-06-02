@@ -54,6 +54,9 @@ desktop.ini
 *.log
 logs/
 
+# SonarQube (contain auth tokens — commit sonar-project.properties.example instead)
+sonar-project.properties
+
 # Certificates
 *.pem
 *.key

@@ -1,5 +1,5 @@
 /**
- * Paylix API Client
+ * AbunthraHR API Client
  * Centralised Axios instance with JWT token injection and refresh logic.
  */
 import axios from "axios";
@@ -23,7 +23,7 @@ api.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`;
     }
     // Super admin company switching — send selected company to backend
-    const companyId = Cookies.get("paylix_company_id");
+    const companyId = Cookies.get("abunthrahr_company_id");
     if (companyId) {
       config.headers["X-Company-ID"] = companyId;
     }
@@ -233,10 +233,10 @@ export const companiesApi = {
 };
 
 // Cookie helpers for company switching
-export const activeCompanyId = () => Cookies.get("paylix_company_id") || null;
+export const activeCompanyId = () => Cookies.get("abunthrahr_company_id") || null;
 export const setActiveCompany = (id) => {
-  if (id) Cookies.set("paylix_company_id", id, { sameSite: "lax" });
-  else Cookies.remove("paylix_company_id");
+  if (id) Cookies.set("abunthrahr_company_id", id, { sameSite: "lax" });
+  else Cookies.remove("abunthrahr_company_id");
 };
 
 export default api;
