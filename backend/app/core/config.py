@@ -1,5 +1,5 @@
 """
-Paylix - Application Configuration
+AbunthraHR - Application Configuration
 """
 from functools import lru_cache
 from typing import Optional
@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     )
 
     # App
-    APP_NAME: str = "Paylix"
-    APP_VERSION: str = "1.0.0"
+    APP_NAME: str = "AbunthraHR"
+    APP_VERSION: str = "2.0.0"
     DEBUG: bool = False
     ENVIRONMENT: str = "production"
 
@@ -29,21 +29,25 @@ class Settings(BaseSettings):
     # Database
     POSTGRES_HOST: str = "db"
     POSTGRES_PORT: int = 5432
-    POSTGRES_USER: str = "paylix"
+    POSTGRES_USER: str = "abunthrahr"
     POSTGRES_PASSWORD: str = "changeme"
-    POSTGRES_DB: str = "paylix"
+    POSTGRES_DB: str = "abunthrahr"
 
     @property
     def DATABASE_URL(self) -> str:
+        from urllib.parse import quote_plus
+        password = quote_plus(self.POSTGRES_PASSWORD)
         return (
-            f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"postgresql+asyncpg://{self.POSTGRES_USER}:{password}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
     @property
     def SYNC_DATABASE_URL(self) -> str:
+        from urllib.parse import quote_plus
+        password = quote_plus(self.POSTGRES_PASSWORD)
         return (
-            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"postgresql+psycopg2://{self.POSTGRES_USER}:{password}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
@@ -68,13 +72,13 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
-    SMTP_FROM_EMAIL: str = "noreply@paylix.lk"
-    SMTP_FROM_NAME: str = "Paylix"
+    SMTP_FROM_EMAIL: str = "noreply@abunthrahr.lk"
+    SMTP_FROM_NAME: str = "AbunthraHR"
     SMTP_TLS: bool = True
 
     # OTP / MFA
     OTP_EXPIRE_MINUTES: int = 10
-    TOTP_ISSUER: str = "Paylix"
+    TOTP_ISSUER: str = "AbunthraHR"
     MFA_ENABLED: bool = False  # set True in .env when SMTP is configured
 
     # File Storage

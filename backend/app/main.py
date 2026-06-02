@@ -1,8 +1,14 @@
 """
-Paylix - FastAPI Application Entry Point
+AbunthraHR - FastAPI Application Entry Point
 """
+import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
+
+# asyncpg on Windows requires SelectorEventLoop (ProactorEventLoop breaks SSL detection)
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,17 +28,17 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Paylix starting — environment: %s", settings.ENVIRONMENT)
+    logger.info("AbunthraHR starting — environment: %s", settings.ENVIRONMENT)
     await ensure_public_schema_tables()
     logger.info("Database schema verified.")
     yield
-    logger.info("Paylix shutting down.")
+    logger.info("AbunthraHR shutting down.")
 
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="Multi-company payroll BPO SaaS for InTalent Asia Sri Lanka",
+    description="AbunthraHR — Multi-company payroll BPO SaaS by InTalent Asia Sri Lanka",
     docs_url="/api/docs" if settings.DEBUG else None,
     redoc_url="/api/redoc" if settings.DEBUG else None,
     openapi_url="/api/openapi.json" if settings.DEBUG else None,

@@ -120,7 +120,7 @@ export default function LoginPage() {
         <div style={{ position: "absolute", top: -80, left: -80, width: 320, height: 320, background: "radial-gradient(circle,rgba(79,123,255,0.12) 0%,transparent 70%)", pointerEvents: "none" }} />
         <div style={{ position: "absolute", bottom: -60, right: -60, width: 260, height: 260, background: "radial-gradient(circle,rgba(168,85,247,0.08) 0%,transparent 70%)", pointerEvents: "none" }} />
 
-        {/* InTalent Asia Logo + Paylix brand */}
+        {/* InTalent Asia Logo + AbunthraHR brand */}
         <div style={{ display: "flex", flexDirection: "column", gap: 20, position: "relative" }}>
           {/* InTalent Asia logo */}
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -133,10 +133,10 @@ export default function LoginPage() {
           {/* Divider */}
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ flex: 1, height: 1, background: "#1e2a42" }} />
-            <div style={{ width: 36, height: 36, background: "linear-gradient(135deg,#4f7bff,#a855f7)", borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, color: "#fff" }}>P</div>
+            <img src="/logo-abunthrahr.svg" alt="AbunthraHR" style={{ width: 36, height: 36, objectFit: "contain" }} />
             <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#e8eaf2" }}>Paylix</div>
-              <div style={{ fontSize: 9, color: "#4f7bff", letterSpacing: 1.2, textTransform: "uppercase" }}>BPO Payroll Platform</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: "#e8eaf2" }}>Abunthra<span style={{ color: "#00aaff" }}>HR</span></div>
+              <div style={{ fontSize: 9, color: "#00aaff", letterSpacing: 1.2, textTransform: "uppercase" }}>by InTalent Asia</div>
             </div>
           </div>
         </div>
@@ -173,7 +173,7 @@ export default function LoginPage() {
 
         {/* Footer */}
         <p style={{ fontSize: 11, color: "#2d3650", position: "relative" }}>
-          © {new Date().getFullYear()} Paylix · Intalent Asia (Pvt) Ltd · All rights reserved
+          © {new Date().getFullYear()} AbunthraHR · InTalent Asia (Pvt) Ltd · All rights reserved
         </p>
       </div>
 
@@ -182,8 +182,8 @@ export default function LoginPage() {
 
         {/* Mobile logo */}
         <div className="login-mobile-logo" style={{ display: "none", alignItems: "center", gap: 10, marginBottom: 32 }}>
-          <div style={{ width: 38, height: 38, background: "linear-gradient(135deg,#4f7bff,#a855f7)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, color: "#fff" }}>P</div>
-          <span style={{ fontSize: 18, fontWeight: 700, color: "#e8eaf2" }}>Paylix</span>
+          <img src="/logo-abunthrahr.svg" alt="AbunthraHR" style={{ width: 38, height: 38, objectFit: "contain" }} />
+          <span style={{ fontSize: 18, fontWeight: 800, color: "#e8eaf2" }}>Abunthra<span style={{ color: "#00aaff" }}>HR</span></span>
         </div>
 
         <div style={{ width: "100%", maxWidth: 420 }}>
@@ -193,7 +193,7 @@ export default function LoginPage() {
             <div style={{ background: "#161922", border: "1px solid #2a3048", borderRadius: 16, padding: "36px 32px", boxShadow: "0 24px 64px rgba(0,0,0,0.4)" }}>
               <div style={{ marginBottom: 28 }}>
                 <h1 style={{ fontSize: 22, fontWeight: 700, color: "#e8eaf2", letterSpacing: -0.5, margin: 0 }}>Sign in</h1>
-                <p style={{ fontSize: 13, color: "#5a6280", marginTop: 6 }}>Enter your credentials to access Paylix</p>
+                <p style={{ fontSize: 13, color: "#5a6280", marginTop: 6 }}>Enter your credentials to access AbunthraHR</p>
               </div>
 
               <form onSubmit={handleCredentials} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -297,7 +297,7 @@ export default function LoginPage() {
           )}
 
           <p style={{ textAlign: "center", fontSize: 11, color: "#2d3650", marginTop: 16 }}>
-            Paylix Payroll Management System · v2.0
+            AbunthraHR by InTalent Asia · v2.0
           </p>
         </div>
       </div>

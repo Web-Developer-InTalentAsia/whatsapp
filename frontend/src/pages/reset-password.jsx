@@ -81,8 +81,8 @@ export default function ResetPasswordPage() {
 
         {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 32, justifyContent: "center" }}>
-          <div style={{ width: 38, height: 38, background: "linear-gradient(135deg,#4f7bff,#a855f7)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, color: "#fff" }}>P</div>
-          <span style={{ fontSize: 18, fontWeight: 700, color: "#e8eaf2" }}>Paylix</span>
+          <img src="/logo-abunthrahr.svg" alt="AbunthraHR" style={{ width: 38, height: 38, objectFit: "contain" }} />
+          <span style={{ fontSize: 18, fontWeight: 800, color: "#e8eaf2" }}>Abunthra<span style={{ color: "#00aaff" }}>HR</span></span>
         </div>
 
         <div style={{ background: "#161922", border: "1px solid #2a3048", borderRadius: 16, padding: "36px 32px", boxShadow: "0 24px 64px rgba(0,0,0,0.4)" }}>
@@ -186,7 +186,7 @@ export default function ResetPasswordPage() {
         </div>
 
         <p style={{ textAlign: "center", fontSize: 11, color: "#2d3650", marginTop: 20 }}>
-          Paylix Payroll Management System · v2.0
+          AbunthraHR by InTalent Asia · v2.0
         </p>
       </div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>

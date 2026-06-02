@@ -118,10 +118,10 @@ export default function RegisterPage() {
       <div style={{ width: "42%", minWidth: 320, background: "linear-gradient(160deg,#0d1526 0%,#111827 50%,#0f1117 100%)", borderRight: "1px solid #1e2a42", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "48px 44px", position: "relative", overflow: "hidden" }} className="reg-left-panel">
         <div style={{ position: "absolute", top: -80, left: -80, width: 300, height: 300, background: "radial-gradient(circle,rgba(79,123,255,0.1) 0%,transparent 70%)", pointerEvents: "none" }} />
         <div style={{ display: "flex", alignItems: "center", gap: 12, position: "relative" }}>
-          <div style={{ width: 44, height: 44, background: "linear-gradient(135deg,#4f7bff,#a855f7)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 18, color: "#fff", boxShadow: "0 4px 20px rgba(79,123,255,0.3)" }}>P</div>
+          <img src="/logo-abunthrahr.svg" alt="AbunthraHR" style={{ width: 44, height: 44, objectFit: "contain" }} />
           <div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "#e8eaf2" }}>Paylix</div>
-            <div style={{ fontSize: 10, color: "#4f7bff", letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 500 }}>BPO Payroll Platform</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#e8eaf2" }}>Abunthra<span style={{ color: "#00aaff" }}>HR</span></div>
+            <div style={{ fontSize: 10, color: "#00aaff", letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 500 }}>by InTalent Asia</div>
           </div>
         </div>
 
@@ -131,7 +131,7 @@ export default function RegisterPage() {
             <span style={{ background: "linear-gradient(90deg,#4f7bff,#a855f7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>for free today</span>
           </div>
           <p style={{ fontSize: 13, color: "#5a6280", lineHeight: 1.7, maxWidth: 280 }}>
-            Create your Paylix account and start managing your payroll in minutes.
+            Create your AbunthraHR account and start managing your payroll in minutes.
           </p>
           <div style={{ marginTop: 28, display: "flex", flexDirection: "column", gap: 12 }}>
             {["No setup fee · Free trial", "Full EPF / ETF / APIT compliance", "Multi-company support", "Cancel anytime"].map(t => (
@@ -146,7 +146,7 @@ export default function RegisterPage() {
         </div>
 
         <p style={{ fontSize: 11, color: "#2d3650", position: "relative" }}>
-          © {new Date().getFullYear()} Paylix · Intalent Asia (Pvt) Ltd
+          © {new Date().getFullYear()} AbunthraHR · InTalent Asia (Pvt) Ltd
         </p>
       </div>
 
@@ -155,8 +155,8 @@ export default function RegisterPage() {
 
         {/* Mobile logo */}
         <div className="reg-mobile-logo" style={{ display: "none", alignItems: "center", gap: 10, marginBottom: 28 }}>
-          <div style={{ width: 36, height: 36, background: "linear-gradient(135deg,#4f7bff,#a855f7)", borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 15, color: "#fff" }}>P</div>
-          <span style={{ fontSize: 17, fontWeight: 700, color: "#e8eaf2" }}>Paylix</span>
+          <img src="/logo-abunthrahr.svg" alt="AbunthraHR" style={{ width: 36, height: 36, objectFit: "contain" }} />
+          <span style={{ fontSize: 17, fontWeight: 800, color: "#e8eaf2" }}>Abunthra<span style={{ color: "#00aaff" }}>HR</span></span>
         </div>
 
         <div style={{ width: "100%", maxWidth: 420 }}>
@@ -164,7 +164,7 @@ export default function RegisterPage() {
 
             <div style={{ marginBottom: 24 }}>
               <h1 style={{ fontSize: 20, fontWeight: 700, color: "#e8eaf2", margin: 0 }}>Create your account</h1>
-              <p style={{ fontSize: 13, color: "#5a6280", marginTop: 5 }}>Set up your Paylix workspace in seconds</p>
+              <p style={{ fontSize: 13, color: "#5a6280", marginTop: 5 }}>Set up your AbunthraHR workspace in seconds</p>
             </div>
 
             <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -276,7 +276,7 @@ export default function RegisterPage() {
           </div>
 
           <p style={{ textAlign: "center", fontSize: 11, color: "#2d3650", marginTop: 16 }}>
-            Paylix Payroll Management System · v2.0
+            AbunthraHR by InTalent Asia · v2.0
           </p>
         </div>
       </div>

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import {
   LayoutDashboard, Users, Clock, Calendar, DollarSign,
-  ShieldCheck, BarChart3, FileText, LogOut, Settings,
+  ShieldCheck, BarChart3, FileText, LogOut,
   CheckSquare, Lock, Building2, Sliders, ChevronDown,
   Check, Plus, X,
 } from "lucide-react";
@@ -146,7 +146,7 @@ export default function Sidebar({ user }) {
     companiesApi.list().then(res => {
       const list = res.data;
       setCompanies(list);
-      const cookieId = Cookies.get("paylix_company_id");
+      const cookieId = Cookies.get("abunthrahr_company_id");
       const found = list.find(c => c.id === cookieId);
       if (found) {
         setActiveCompanyState(found);
@@ -180,7 +180,7 @@ export default function Sidebar({ user }) {
     Cookies.remove("access_token");
     Cookies.remove("refresh_token");
     Cookies.remove("user");
-    Cookies.remove("paylix_company_id");
+    Cookies.remove("abunthrahr_company_id");
     window.location.href = "/login";
   }
 
@@ -197,12 +197,14 @@ export default function Sidebar({ user }) {
   return (
     <>
       <aside style={{ width: 220, minWidth: 220, background: "var(--bg2)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", overflow: "hidden", height: "100vh" }}>
-        {/* Paylix brand header */}
+        {/* AbunthraHR brand header */}
         <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 34, height: 34, background: "linear-gradient(135deg,#4f7bff,#a855f7)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 15, color: "#fff", flexShrink: 0 }}>P</div>
+          <img src="/logo-abunthrahr.svg" alt="AbunthraHR" style={{ width: 34, height: 34, objectFit: "contain", flexShrink: 0 }} />
           <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--txt)", letterSpacing: "-.3px" }}>Paylix</div>
-            <div style={{ fontSize: 9, fontWeight: 500, color: "var(--accent)", letterSpacing: ".8px", textTransform: "uppercase" }}>BPO Payroll Platform</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "var(--txt)", letterSpacing: "-.3px" }}>
+              Abunthra<span style={{ color: "#00aaff" }}>HR</span>
+            </div>
+            <div style={{ fontSize: 9, fontWeight: 500, color: "var(--txt3)", letterSpacing: ".8px", textTransform: "uppercase" }}>by InTalent Asia</div>
           </div>
         </div>
 

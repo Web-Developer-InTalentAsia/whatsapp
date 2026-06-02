@@ -1,11 +1,12 @@
 """
-Paylix - Database Engine & Session Management
+AbunthraHR - Database Engine & Session Management
 Supports multi-tenant schema isolation per company.
 """
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+import asyncpg as _asyncpg
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -18,6 +19,21 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+async def _connect_no_ssl(*args, **kwargs):
+    """Force ssl=False so asyncpg doesn't attempt SSL on local Windows PG."""
+    import sys
+    kwargs["ssl"] = False
+    print(f"[DB] connecting: host={kwargs.get('host')!r} port={kwargs.get('port')!r} db={kwargs.get('database')!r} ssl={kwargs.get('ssl')!r}", file=sys.stderr, flush=True)
+    try:
+        result = await _asyncpg.connect(*args, **kwargs)
+        print("[DB] connection SUCCESS", file=sys.stderr, flush=True)
+        return result
+    except Exception as e:
+        print(f"[DB] connection FAILED: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Async engine (used by FastAPI)
 # ---------------------------------------------------------------------------
@@ -27,6 +43,7 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_size=20,
     max_overflow=40,
+    connect_args={"async_creator_fn": _connect_no_ssl},
 )
 
 AsyncSessionLocal = async_sessionmaker(
