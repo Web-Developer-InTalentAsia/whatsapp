@@ -27,10 +27,10 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]
 
     # Database
-    POSTGRES_HOST: str = "db"
+    POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_USER: str = "abunthrahr"
-    POSTGRES_PASSWORD: str = "changeme"
+    POSTGRES_PASSWORD: str = "Admin@123"
     POSTGRES_DB: str = "abunthrahr"
 
     @property
@@ -52,9 +52,9 @@ class Settings(BaseSettings):
         )
 
     # Redis
-    REDIS_URL: str = "redis://redis:6379/0"
-    CELERY_BROKER_URL: str = "redis://redis:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # JWT
     JWT_SECRET_KEY: str = "CHANGE-ME-super-secret-jwt-key-at-least-32-chars"
@@ -83,7 +83,7 @@ class Settings(BaseSettings):
 
     # File Storage
     STORAGE_TYPE: str = "local"  # local | s3
-    STORAGE_LOCAL_PATH: str = "/app/uploads"
+    STORAGE_LOCAL_PATH: str = "./uploads"
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_S3_BUCKET: Optional[str] = None
