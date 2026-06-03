@@ -1,24 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none">
   <defs>
-    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#0055cc;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#00aaff;stop-opacity:1" />
+    <linearGradient id="gA" x1="30" y1="10" x2="170" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0055cc"/>
+      <stop offset="100%" stop-color="#00aaff"/>
     </linearGradient>
-    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#0077ee;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#00ccff;stop-opacity:1" />
+    <linearGradient id="gB" x1="60" y1="80" x2="160" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0077ee"/>
+      <stop offset="100%" stop-color="#33ccff"/>
     </linearGradient>
   </defs>
-  <!-- Outer A shape left leg -->
-  <path d="M20 140 L60 30 L80 70 L50 140 Z" fill="url(#grad1)" />
-  <!-- Outer A shape right leg -->
-  <path d="M140 140 L100 30 L80 70 L110 140 Z" fill="url(#grad2)" />
-  <!-- Inner cutout / flowing bottom left -->
-  <path d="M45 140 L72 80 L80 95 L60 140 Z" fill="#0a1628" />
-  <!-- Inner cutout / flowing bottom right -->
-  <path d="M115 140 L88 80 L80 95 L100 140 Z" fill="#0a1628" />
-  <!-- Crossbar -->
-  <path d="M55 100 L105 100 L108 110 L52 110 Z" fill="url(#grad1)" />
-  <!-- Circle dot at top -->
-  <circle cx="80" cy="25" r="10" fill="url(#grad2)" />
+
+  <!-- Left outer leg of A -->
+  <path d="M18 185 L72 28 Q80 12 88 28 L100 65 L58 185 Z" fill="url(#gA)"/>
+
+  <!-- Right outer leg of A -->
+  <path d="M182 185 L128 28 Q120 12 112 28 L100 65 L142 185 Z" fill="url(#gB)"/>
+
+  <!-- Inner shadow cut — left leg -->
+  <path d="M52 185 L78 108 L100 120 L70 185 Z" fill="#08111f"/>
+
+  <!-- Inner shadow cut — right leg -->
+  <path d="M148 185 L122 108 L100 120 L130 185 Z" fill="#08111f"/>
+
+  <!-- Crossbar / body connecting the two legs -->
+  <path d="M68 118 Q80 105 100 108 Q120 105 132 118 L128 134 Q115 122 100 124 Q85 122 72 134 Z" fill="url(#gA)"/>
+
+  <!-- Person dot at apex -->
+  <circle cx="100" cy="18" r="13" fill="url(#gB)"/>
+
+  <!-- Inner flowing curves (bottom left swoop) -->
+  <path d="M38 185 Q52 160 68 148 L80 160 Q62 172 52 185 Z" fill="url(#gA)" opacity="0.7"/>
+
+  <!-- Inner flowing curves (bottom right swoop) -->
+  <path d="M162 185 Q148 160 132 148 L120 160 Q138 172 148 185 Z" fill="url(#gB)" opacity="0.7"/>
 </svg>
