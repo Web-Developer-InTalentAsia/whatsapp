@@ -1,0 +1,136 @@
+export interface User {
+  id: number;
+  email: string;
+  role: 'super_admin' | 'admin' | 'user';
+  name: string;
+  isActive: boolean;
+  canEditWorkflows: boolean;
+  createdAt?: string;
+}
+
+export interface WhatsAppNumber {
+  id: number;
+  displayName: string;
+  phoneNumber: string;
+  phoneNumberId: string;
+  wabaId: string;
+  appId: string;
+  appSecret: string;
+  accessToken: string;
+  verifyToken: string;
+  webhookStatus: string; // 'Verified' | 'Pending'
+  lastVerified?: string | null;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export interface Contact {
+  id: number;
+  phoneNumber: string;
+  name: string | null;
+  sourceNumberId: number;
+  firstMessageDate?: string;
+  lastMessageDate?: string;
+  assignedUserId?: number | null;
+  tags: string; // comma-separated
+  status: 'active' | 'closed' | 'follow-up';
+  notes: string;
+  capturedAnswers: string; // JSON string
+  cvField: string;
+  linkedinField: string;
+  interestedJobRole: string;
+  expectedSalary: string;
+  location: string;
+  experience: string;
+  clientCandidateType: 'candidate' | 'client';
+}
+
+export interface Conversation {
+  id: number;
+  contactId: number;
+  whatsappNumberId: number;
+  assignedUserId?: number | null;
+  status: 'unread' | 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed';
+  lastMessageAt: string;
+  createdAt?: string;
+  contact?: Contact;
+}
+
+export interface Message {
+  id: number;
+  conversationId: number;
+  sender: 'contact' | 'agent' | 'system';
+  senderName: string;
+  content: string;
+  messageType: 'text' | 'document' | 'cv' | 'location';
+  replyType: 'manual' | 'ai' | 'workflow' | 'none';
+  status: 'sent' | 'received' | 'failed';
+  timestamp: string;
+  agentId?: number | null;
+}
+
+export interface WorkflowStep {
+  id: string;
+  type: 'question' | 'menu' | 'capture_text' | 'end_workflow' | 'handover';
+  questionText: string;
+  variableName?: string; // name of contact field to save answer (e.g. cvField, interestedJobRole, etc.)
+  options?: {
+    key: string;
+    text: string;
+    nextStepId: string;
+  }[];
+  nextStepId?: string;
+}
+
+export interface Workflow {
+  id: number;
+  whatsappNumberId: number;
+  name: string;
+  triggerKeyword: string;
+  welcomeMessage: string;
+  isActive: boolean;
+  steps: string; // JSON string of WorkflowStep[]
+  createdAt?: string;
+}
+
+export interface AISettings {
+  id: number;
+  whatsappNumberId: number;
+  aiProvider: string;
+  apiKey: string;
+  modelName: string;
+  defaultTone: 'professional' | 'casual' | 'friendly' | 'helpful';
+  companyKnowledgeBase: string;
+  restrictedWords: string;
+  autoSuggest: boolean;
+  autoReply: boolean;
+  humanApprovalRequired: boolean;
+}
+
+export interface AITrainingData {
+  id: number;
+  whatsappNumberId: number;
+  type: 'approved_reply' | 'rejected_reply' | 'faq' | 'rule';
+  question: string;
+  answer: string;
+  createdAt?: string;
+}
+
+export interface AuditLog {
+  id: number;
+  userId?: number | null;
+  userEmail?: string | null;
+  action: string;
+  details: string;
+  ipAddress?: string | null;
+  timestamp: string;
+}
+
+export interface QuickReply {
+  id: number;
+  whatsappNumberId: number;
+  shortcut: string;
+  message: string;
+  createdAt?: string;
+}
+
