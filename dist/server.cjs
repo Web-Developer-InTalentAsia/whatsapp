@@ -343,9 +343,34 @@ var db = (0, import_node_postgres.drizzle)(pool, { schema: schema_exports });
 
 // server.ts
 var app = (0, import_express.default)();
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
 var PORT = Number(process.env.PORT || 3e3);
-var JWT_SECRET = process.env.JWT_SECRET || "intalent_whatsapp_secret_key";
-app.use(import_express.default.json());
+var configuredJwtSecret = process.env.JWT_SECRET?.trim();
+if (!configuredJwtSecret && process.env.NODE_ENV === "production") {
+  throw new Error(
+    "JWT_SECRET environment variable is required when NODE_ENV=production."
+  );
+}
+var JWT_SECRET = configuredJwtSecret || "development_only_intalent_whatsapp_secret";
+app.use(import_express.default.json({ limit: "1mb" }));
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    ok: true,
+    app: "intalent-whatsapp",
+    environment: process.env.NODE_ENV || "development",
+    host: req.get("host") || null,
+    protocol: req.protocol,
+    forwardedProto: req.get("x-forwarded-proto") || null,
+    time: (/* @__PURE__ */ new Date()).toISOString()
+  });
+});
 var ai = null;
 if (process.env.GEMINI_API_KEY) {
   ai = new import_genai.GoogleGenAI({
@@ -678,23 +703,32 @@ async function ensureSeedData() {
     console.error("Error checking or seeding database:", error);
   }
 }
-ensureSeedData();
 var authenticateJWT = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  const rawAuthorization = req.headers.authorization || req.headers["x-forwarded-authorization"] || "";
+  const authHeader = String(rawAuthorization).trim();
+  if (!authHeader.toLowerCase().startsWith("bearer ")) {
     return res.status(401).json({ error: "Access denied. Token missing." });
   }
-  const token = authHeader.split("Bearer ")[1];
+  const token = authHeader.slice(7).trim();
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. Token missing." });
+  }
   try {
     const decoded = import_jsonwebtoken.default.verify(token, JWT_SECRET);
-    const [user] = await db.select().from(schema_exports.users).where((0, import_drizzle_orm2.eq)(schema_exports.users.id, decoded.id)).limit(1);
+    if (!decoded || !Number.isInteger(Number(decoded.id))) {
+      return res.status(403).json({ error: "Invalid authentication token." });
+    }
+    const [user] = await db.select().from(schema_exports.users).where((0, import_drizzle_orm2.eq)(schema_exports.users.id, Number(decoded.id))).limit(1);
     if (!user || !user.isActive) {
       return res.status(401).json({ error: "User is suspended or deactivated." });
     }
     req.user = user;
-    next();
-  } catch (err) {
-    return res.status(403).json({ error: "Invalid or expired token." });
+    return next();
+  } catch (error) {
+    if (error?.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Your session has expired. Please sign in again." });
+    }
+    return res.status(403).json({ error: "Invalid authentication token." });
   }
 };
 var requireRoles = (allowedRoles) => {
@@ -719,7 +753,8 @@ async function auditLog(userId, email, action, details, ip) {
   }
 }
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body;
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
   if (!email || !password) {
     return res.status(400).json({ error: "Please provide email and password." });
   }
@@ -735,9 +770,19 @@ app.post("/api/auth/login", async (req, res) => {
     if (!isMatch) {
       return res.status(401).json({ error: "Invalid email or password." });
     }
-    const token = import_jsonwebtoken.default.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
-    await auditLog(user.id, user.email, "Login", `User ${user.name} logged in successfully.`);
-    res.json({
+    const token = import_jsonwebtoken.default.sign(
+      { id: user.id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+    await auditLog(
+      user.id,
+      user.email,
+      "Login",
+      `User ${user.name} logged in successfully.`,
+      req.ip
+    );
+    return res.status(200).json({
       token,
       user: {
         id: user.id,
@@ -750,7 +795,9 @@ app.post("/api/auth/login", async (req, res) => {
     });
   } catch (error) {
     console.error("Login failed:", error);
-    res.status(500).json({ error: "Server login error. Please try again." });
+    return res.status(500).json({
+      error: "Server login error. Please try again."
+    });
   }
 });
 app.get("/api/auth/me", authenticateJWT, (req, res) => {
@@ -2018,22 +2065,50 @@ app.get("/api/dashboard", authenticateJWT, async (req, res) => {
   }
 });
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await (0, import_vite.createServer)({
-      server: { middlewareMode: true },
-      appType: "spa"
+  try {
+    await ensureSeedData();
+    app.use("/api", (req, res) => {
+      return res.status(404).json({
+        error: `API endpoint not found: ${req.method} ${req.originalUrl}`
+      });
     });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = import_path.default.join(process.cwd(), "dist");
-    app.use(import_express.default.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(import_path.default.join(distPath, "index.html"));
+    if (process.env.NODE_ENV !== "production") {
+      const vite = await (0, import_vite.createServer)({
+        server: { middlewareMode: true },
+        appType: "spa"
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = import_path.default.join(process.cwd(), "dist");
+      app.use(
+        import_express.default.static(distPath, {
+          index: false,
+          maxAge: "1h"
+        })
+      );
+      app.get("*", (_req, res) => {
+        res.setHeader("Cache-Control", "no-cache");
+        return res.sendFile(import_path.default.join(distPath, "index.html"));
+      });
+    }
+    const server = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server is booted and running on http://localhost:${PORT}`);
+      console.log(
+        `Public health check: ${process.env.APP_URL || `http://localhost:${PORT}`}/api/health`
+      );
     });
+    server.on("error", (error) => {
+      if (error.code === "EADDRINUSE") {
+        console.error(`Port ${PORT} is already in use.`);
+      } else {
+        console.error("HTTP server error:", error);
+      }
+      process.exit(1);
+    });
+  } catch (error) {
+    console.error("Application startup failed:", error);
+    process.exit(1);
   }
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server is booted and running on http://localhost:${PORT}`);
-  });
 }
-startServer();
+void startServer();
 //# sourceMappingURL=server.cjs.map
