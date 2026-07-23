@@ -297,6 +297,22 @@ export default function Login({
               </button>
             </div>
           )}
+
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-xs text-zinc-500">
+            <a
+              href="/privacy"
+              className="transition hover:text-emerald-400"
+            >
+              Privacy Policy
+            </a>
+            <span>•</span>
+            <a
+              href="/data-deletion"
+              className="transition hover:text-emerald-400"
+            >
+              Data Deletion
+            </a>
+          </div>
         </div>
       </div>
     </div>

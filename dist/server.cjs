@@ -29,6 +29,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var import_config = require("dotenv/config");
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
+var import_crypto = __toESM(require("crypto"), 1);
 var import_bcryptjs = __toESM(require("bcryptjs"), 1);
 var import_jsonwebtoken = __toESM(require("jsonwebtoken"), 1);
 var import_vite = require("vite");
@@ -353,7 +354,12 @@ if (!configuredJwtSecret && process.env.NODE_ENV === "production") {
   );
 }
 var JWT_SECRET = configuredJwtSecret || "development_only_intalent_whatsapp_secret";
-app.use(import_express.default.json({ limit: "1mb" }));
+app.use(import_express.default.json({
+  limit: "1mb",
+  verify: (req, _res, buffer) => {
+    req.rawBody = Buffer.from(buffer);
+  }
+}));
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
@@ -397,6 +403,17 @@ async function parseMetaResponse(response) {
   } catch {
     return { raw };
   }
+}
+function verifyMetaWebhookSignature(params) {
+  const appSecret = String(params.appSecret || "").trim();
+  const signatureHeader = String(params.signatureHeader || "").trim();
+  if (!appSecret || !params.rawBody || !signatureHeader.startsWith("sha256=")) {
+    return false;
+  }
+  const expected = `sha256=${import_crypto.default.createHmac("sha256", appSecret).update(params.rawBody).digest("hex")}`;
+  const expectedBuffer = Buffer.from(expected, "utf8");
+  const actualBuffer = Buffer.from(signatureHeader, "utf8");
+  return expectedBuffer.length === actualBuffer.length && import_crypto.default.timingSafeEqual(expectedBuffer, actualBuffer);
 }
 async function verifyMetaPhoneNumber(params) {
   const phoneNumberId = String(params.phoneNumberId || "").trim();
@@ -1067,12 +1084,11 @@ app.post("/api/whatsapp_numbers/:id/test-connection", authenticateJWT, async (re
       phoneNumberId: num.phoneNumberId,
       accessToken: num.accessToken
     });
-    const [updated] = await db.update(schema_exports.whatsappNumbers).set({ webhookStatus: "Verified", lastVerified: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.whatsappNumbers.id, parseInt(id))).returning();
-    await auditLog(req.user.id, req.user.email, "API Connection Test", `Verified Meta WhatsApp Cloud API setup for ${num.displayName}.`);
+    await auditLog(req.user.id, req.user.email, "API Connection Test", `Verified Meta WhatsApp Cloud API credentials for ${num.displayName}.`);
     res.json({
       success: true,
-      message: "Connection to Meta WhatsApp Cloud API verified successfully.",
-      status: updated.webhookStatus,
+      message: "Meta WhatsApp Cloud API credentials verified successfully. Webhook verification is a separate Meta callback step.",
+      status: num.webhookStatus,
       metaPhone
     });
   } catch (error) {
@@ -1861,37 +1877,48 @@ app.get("/webhooks/whatsapp/:numberId", async (req, res) => {
 });
 app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
   const { numberId } = req.params;
-  let from = "";
-  let text2 = "";
-  let contactName = "";
-  let messageType = "text";
-  const entry = req.body.entry;
-  if (entry && entry[0] && entry[0].changes && entry[0].changes[0] && entry[0].changes[0].value) {
-    const value = entry[0].changes[0].value;
-    const msg = value.messages ? value.messages[0] : null;
-    if (msg) {
-      from = msg.from;
-      text2 = msg.text ? msg.text.body : "";
-      messageType = msg.type || "text";
-      const contact = value.contacts ? value.contacts[0] : null;
-      if (contact) {
-        contactName = contact.profile ? contact.profile.name : "";
-      }
-    }
-  } else {
-    from = req.body.from || "";
-    text2 = req.body.text || "";
-    contactName = req.body.name || "WhatsApp User";
-    messageType = req.body.type || "text";
-  }
-  if (!from || !text2) {
-    return res.status(200).json({ status: "ignored", reason: "missing from or text body" });
-  }
   try {
-    const numId = parseInt(numberId);
+    const numId = Number(numberId);
+    if (!Number.isInteger(numId)) {
+      return res.status(404).json({ error: "WhatsApp Number ID not configured." });
+    }
     const [whatsappNum] = await db.select().from(schema_exports.whatsappNumbers).where((0, import_drizzle_orm2.eq)(schema_exports.whatsappNumbers.id, numId)).limit(1);
     if (!whatsappNum) {
       return res.status(404).json({ error: "WhatsApp Number ID not configured." });
+    }
+    const allowUnsignedDevWebhook = process.env.NODE_ENV !== "production" && process.env.ALLOW_UNSIGNED_WEBHOOK_TESTS === "true";
+    const signatureValid = verifyMetaWebhookSignature({
+      appSecret: whatsappNum.appSecret,
+      rawBody: req.rawBody,
+      signatureHeader: req.get("x-hub-signature-256") || ""
+    });
+    if (!signatureValid && !allowUnsignedDevWebhook) {
+      console.warn(`Rejected invalid WhatsApp webhook signature for number ${numId}.`);
+      return res.status(401).json({ error: "Invalid webhook signature." });
+    }
+    let from = "";
+    let text2 = "";
+    let contactName = "";
+    let messageType = "text";
+    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+    const msg = value?.messages?.[0];
+    if (!msg) {
+      return res.status(200).json({ status: "acknowledged" });
+    }
+    from = normalizeWhatsAppNumber(msg.from || "");
+    messageType = msg.type || "text";
+    contactName = value?.contacts?.[0]?.profile?.name || "WhatsApp User";
+    if (messageType === "text") {
+      text2 = msg.text?.body || "";
+    } else if (messageType === "button") {
+      text2 = msg.button?.text || msg.button?.payload || "";
+    } else if (messageType === "interactive") {
+      text2 = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "";
+    } else {
+      text2 = `[${messageType} message received]`;
+    }
+    if (!from || !text2) {
+      return res.status(200).json({ status: "ignored", reason: "missing sender or supported message content" });
     }
     let [contact] = await db.select().from(schema_exports.contacts).where((0, import_drizzle_orm2.and)(
       (0, import_drizzle_orm2.eq)(schema_exports.contacts.phoneNumber, from),

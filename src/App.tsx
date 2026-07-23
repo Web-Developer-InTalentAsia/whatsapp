@@ -23,6 +23,8 @@ import Settings from "./components/Settings.tsx";
 import Reports from "./components/Reports.tsx";
 import AuditLogs from "./components/AuditLogs.tsx";
 import SetupGuide from "./components/SetupGuide.tsx";
+import PrivacyPolicy from "./components/PrivacyPolicy.tsx";
+import DataDeletion from "./components/DataDeletion.tsx";
 
 const TOKEN_STORAGE_KEY = "intalent_token";
 
@@ -56,6 +58,18 @@ function isCurrentUser(value: unknown): value is CurrentUser {
 }
 
 export default function App() {
+  const currentPath =
+    typeof window !== "undefined"
+      ? window.location.pathname
+      : "/";
+
+  const publicPage =
+    currentPath === "/privacy"
+      ? "privacy"
+      : currentPath === "/data-deletion"
+        ? "data-deletion"
+        : null;
+
   const [token, setToken] = useState<string | null>(() => {
     try {
       return localStorage.getItem(TOKEN_STORAGE_KEY);
@@ -337,6 +351,14 @@ export default function App() {
         </div>
       </div>
     );
+  }
+
+  if (publicPage === "privacy") {
+    return <PrivacyPolicy />;
+  }
+
+  if (publicPage === "data-deletion") {
+    return <DataDeletion />;
   }
 
   // No valid token or authenticated user
