@@ -209,7 +209,9 @@ export default function Settings({ token, currentUser }: SettingsProps) {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` }
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({
+        error: `Server returned ${res.status} ${res.statusText || "without a JSON response"}.`
+      }));
       if (res.ok) {
         setConnectionMessage("SUCCESS: " + data.message);
         loadNumbers();
@@ -217,7 +219,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
         setConnectionMessage("FAILED: " + data.error);
       }
     } catch (e) {
-      setConnectionMessage("Network verification failure.");
+      setConnectionMessage("Network verification failure. Check that the application service is running.");
     } finally {
       setLoadingTest(false);
     }
@@ -237,7 +239,9 @@ export default function Settings({ token, currentUser }: SettingsProps) {
         },
         body: JSON.stringify({ testNumber: testNumInput })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({
+        error: `Server returned ${res.status} ${res.statusText || "without a JSON response"}.`
+      }));
       alert(data.message || data.error);
     } catch (e) { alert("Test reply failed."); }
   };

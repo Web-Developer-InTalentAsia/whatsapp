@@ -74,6 +74,23 @@ if (process.env.GEMINI_API_KEY) {
 
 // --- META WHATSAPP CLOUD API HELPERS ---
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
+const META_API_TIMEOUT_MS = Number(process.env.META_API_TIMEOUT_MS || 15000);
+
+class MetaApiError extends Error {
+  status: number;
+  code?: number;
+  type?: string;
+  traceId?: string;
+
+  constructor(message: string, status: number, data?: any) {
+    super(message);
+    this.name = "MetaApiError";
+    this.status = status;
+    this.code = data?.error?.code;
+    this.type = data?.error?.type;
+    this.traceId = data?.error?.fbtrace_id;
+  }
+}
 
 function normalizeWhatsAppNumber(phone: string) {
   return String(phone || "").trim().replace(/[^\d]/g, "");
@@ -97,6 +114,47 @@ async function parseMetaResponse(response: Response) {
   } catch {
     return { raw };
   }
+}
+
+function throwMetaApiError(data: any, status: number): never {
+  throw new MetaApiError(getMetaApiErrorMessage(data, status), status, data);
+}
+
+function getMetaRouteError(error: unknown) {
+  if (error instanceof MetaApiError) {
+    // A response from Meta is not a reverse-proxy failure. Preserve useful 4xx
+    // statuses while avoiding a misleading 502 from our own application.
+    const status = error.status >= 400 && error.status < 500 ? error.status : 502;
+    return {
+      status,
+      body: {
+        error: error.message,
+        provider: "meta",
+        providerStatus: error.status,
+        providerCode: error.code,
+        providerType: error.type,
+        traceId: error.traceId,
+      },
+    };
+  }
+
+  if (error instanceof Error && error.name === "TimeoutError") {
+    return {
+      status: 504,
+      body: {
+        error: `Meta API did not respond within ${META_API_TIMEOUT_MS}ms.`,
+        provider: "meta",
+      },
+    };
+  }
+
+  return {
+    status: 503,
+    body: {
+      error: error instanceof Error ? error.message : "Meta API is currently unreachable.",
+      provider: "meta",
+    },
+  };
 }
 
 function verifyMetaWebhookSignature(params: {
@@ -139,6 +197,7 @@ async function verifyMetaPhoneNumber(params: {
   const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`;
   const response = await fetch(url, {
     method: "GET",
+    signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
@@ -146,7 +205,7 @@ async function verifyMetaPhoneNumber(params: {
 
   const data = await parseMetaResponse(response);
   if (!response.ok) {
-    throw new Error(getMetaApiErrorMessage(data, response.status));
+    throwMetaApiError(data, response.status);
   }
 
   return data;
@@ -178,6 +237,7 @@ async function sendWhatsAppTextMessage(params: {
   const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${phoneNumberId}/messages`;
   const response = await fetch(url, {
     method: "POST",
+    signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
@@ -196,7 +256,7 @@ async function sendWhatsAppTextMessage(params: {
 
   const data = await parseMetaResponse(response);
   if (!response.ok) {
-    throw new Error(getMetaApiErrorMessage(data, response.status));
+    throwMetaApiError(data, response.status);
   }
 
   return data;
@@ -966,7 +1026,8 @@ app.post("/api/whatsapp_numbers/:id/test-connection", authenticateJWT, async (re
     });
   } catch (error: any) {
     console.error("Meta connection test failed:", error);
-    res.status(502).json({ error: `Meta API connection failed: ${error.message}` });
+    const routeError = getMetaRouteError(error);
+    res.status(routeError.status).json(routeError.body);
   }
 });
 
@@ -994,6 +1055,10 @@ app.post("/api/whatsapp_numbers/:id/test-reply", authenticateJWT, async (req: an
       return res.status(400).json({ error: "This WhatsApp number is inactive." });
     }
 
+    if (!num.phoneNumberId || !num.accessToken) {
+      return res.status(400).json({ error: "Phone Number ID or Access Token is missing in WhatsApp settings." });
+    }
+
     const metaResult = await sendWhatsAppTextMessage({
       phoneNumberId: num.phoneNumberId,
       accessToken: num.accessToken,
@@ -1009,7 +1074,8 @@ app.post("/api/whatsapp_numbers/:id/test-reply", authenticateJWT, async (req: an
     });
   } catch (error: any) {
     console.error("Meta test reply failed:", error);
-    res.status(502).json({ error: `WhatsApp test reply failed: ${error.message}` });
+    const routeError = getMetaRouteError(error);
+    res.status(routeError.status).json(routeError.body);
   }
 });
 
