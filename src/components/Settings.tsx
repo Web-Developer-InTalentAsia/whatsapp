@@ -24,6 +24,8 @@ export default function Settings({ token, currentUser }: SettingsProps) {
   const [connectionMessage, setConnectionMessage] = useState("");
   const [loadingTest, setLoadingTest] = useState(false);
   const [testNumInput, setTestNumInput] = useState("");
+  const [testReplyMessage, setTestReplyMessage] = useState("");
+  const [sendingTestReply, setSendingTestReply] = useState(false);
 
   // Quick Replies State
   const [quickRepliesList, setQuickRepliesList] = useState<QuickReply[]>([]);
@@ -90,6 +92,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
     setSelectedNumber(num);
     setNumForm(num);
     setConnectionMessage("");
+    setTestReplyMessage("");
     
     // Load current assignments
     const assignedIds = (num as any).assignedUsers?.map((au: any) => au.userId) || [];
@@ -226,10 +229,25 @@ export default function Settings({ token, currentUser }: SettingsProps) {
   };
 
   const handleSendTestReply = async () => {
-    if (!selectedNumber || !testNumInput) {
-      alert("Please enter a verified Meta dev test number first.");
+    if (!selectedNumber) return;
+
+    setTestReplyMessage("");
+    const normalizedTestNumber = testNumInput.replace(/[^\d]/g, "");
+
+    if (!numForm.isActive) {
+      setTestReplyMessage("FAILED: Activate this WhatsApp receiving line and save the configuration first.");
       return;
     }
+    if (!numForm.phoneNumberId || !numForm.accessToken) {
+      setTestReplyMessage("FAILED: Enter the Phone Number ID and Permanent Access Token, then save the configuration.");
+      return;
+    }
+    if (normalizedTestNumber.length < 8 || normalizedTestNumber.length > 15) {
+      setTestReplyMessage("FAILED: Enter the recipient in international format with country code, for example 94771234567.");
+      return;
+    }
+
+    setSendingTestReply(true);
     try {
       const res = await fetch(`/api/whatsapp_numbers/${selectedNumber.id}/test-reply`, {
         method: "POST",
@@ -237,13 +255,21 @@ export default function Settings({ token, currentUser }: SettingsProps) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ testNumber: testNumInput })
+        body: JSON.stringify({ testNumber: normalizedTestNumber })
       });
       const data = await res.json().catch(() => ({
         error: `Server returned ${res.status} ${res.statusText || "without a JSON response"}.`
       }));
-      alert(data.message || data.error);
-    } catch (e) { alert("Test reply failed."); }
+      setTestReplyMessage(
+        res.ok
+          ? `SUCCESS: ${data.message}`
+          : `FAILED: ${data.error || `Request failed with HTTP ${res.status}.`}`
+      );
+    } catch (e) {
+      setTestReplyMessage("FAILED: Could not reach the application server.");
+    } finally {
+      setSendingTestReply(false);
+    }
   };
 
   // --- AI SETTINGS ACTIONS ---
@@ -771,15 +797,19 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                           type="text"
                           placeholder="Meta Test Number"
                           value={testNumInput}
-                          onChange={(e) => setTestNumInput(e.target.value)}
+                          onChange={(e) => {
+                            setTestNumInput(e.target.value);
+                            setTestReplyMessage("");
+                          }}
                           className="border border-zinc-800 bg-[#09090b] text-zinc-150 p-2 rounded-xl text-xs font-mono max-w-[130px] outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
                         />
                         <button
                           type="button"
                           onClick={handleSendTestReply}
-                          className="text-xs bg-emerald-950/40 text-emerald-400 hover:bg-emerald-900/60 border border-emerald-850/60 px-3 py-2 rounded-xl font-semibold transition cursor-pointer"
+                          disabled={sendingTestReply}
+                          className="text-xs bg-emerald-950/40 text-emerald-400 hover:bg-emerald-900/60 border border-emerald-850/60 px-3 py-2 rounded-xl font-semibold transition cursor-pointer disabled:opacity-50"
                         >
-                          Send Test Text
+                          {sendingTestReply ? "Sending..." : "Send Test Text"}
                         </button>
                       </div>
                     )}
@@ -803,6 +833,16 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                     : "bg-rose-950/45 text-rose-300 border-rose-900/50"
                 }`}>
                   {connectionMessage}
+                </div>
+              )}
+
+              {testReplyMessage && (
+                <div className={`p-4 rounded-xl text-xs font-mono border ${
+                  testReplyMessage.startsWith("SUCCESS")
+                    ? "bg-emerald-950/45 text-emerald-300 border-emerald-900/50"
+                    : "bg-rose-950/45 text-rose-300 border-rose-900/50"
+                }`}>
+                  {testReplyMessage}
                 </div>
               )}
 

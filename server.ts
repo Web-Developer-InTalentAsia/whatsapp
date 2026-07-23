@@ -1047,6 +1047,12 @@ app.post("/api/whatsapp_numbers/:id/test-reply", authenticateJWT, async (req: an
   const { id } = req.params;
   const { testNumber } = req.body;
   if (!testNumber) return res.status(400).json({ error: "Please specify an authorized Meta Developer Test Number." });
+  const normalizedTestNumber = normalizeWhatsAppNumber(testNumber);
+  if (normalizedTestNumber.length < 8 || normalizedTestNumber.length > 15) {
+    return res.status(400).json({
+      error: "Recipient number must use international format with country code (8 to 15 digits, without a leading +).",
+    });
+  }
   try {
     const [num] = await db.select().from(schema.whatsappNumbers).where(eq(schema.whatsappNumbers.id, parseInt(id))).limit(1);
     if (!num) return res.status(404).json({ error: "Number not found." });
@@ -1062,14 +1068,14 @@ app.post("/api/whatsapp_numbers/:id/test-reply", authenticateJWT, async (req: an
     const metaResult = await sendWhatsAppTextMessage({
       phoneNumberId: num.phoneNumberId,
       accessToken: num.accessToken,
-      to: testNumber,
+      to: normalizedTestNumber,
       body: "Hello from InTalent WhatsApp Inbox. This is a Meta Cloud API test message.",
     });
 
-    await auditLog(req.user.id, req.user.email, "Meta Test Reply", `Sent real Meta WhatsApp test reply to ${testNumber}.`);
+    await auditLog(req.user.id, req.user.email, "Meta Test Reply", `Sent real Meta WhatsApp test reply to ${normalizedTestNumber}.`);
     res.json({
       success: true,
-      message: `A real WhatsApp test reply was sent to ${testNumber}.`,
+      message: `A real WhatsApp test reply was sent to ${normalizedTestNumber}.`,
       metaResult,
     });
   } catch (error: any) {
