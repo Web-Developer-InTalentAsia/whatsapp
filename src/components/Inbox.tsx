@@ -386,36 +386,8 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     }
   };
 
-  // Mock simulate webhook inbound messages
-  const handleTriggerInboundMock = async () => {
-    if (!selectedConversation || !contact) return;
-    const testMsg = prompt("Enter a test inbound message to simulate from this contact:");
-    if (!testMsg) return;
-
-    try {
-      const response = await fetch(`/webhooks/whatsapp/${selectedConversation.whatsappNumberId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: contact.phoneNumber,
-          text: testMsg,
-          name: contact.name || "Test User",
-          type: "text"
-        })
-      });
-
-      if (response.ok) {
-        alert("Simulated incoming message processed!");
-        // Refresh
-        handleSelectConversation(selectedConversation);
-      }
-    } catch (e) {
-      alert("Mock ingestion error");
-    }
-  };
-
   return (
-    <div className="h-[calc(100vh-64px)] flex bg-[#060608] overflow-hidden font-sans text-zinc-100">
+    <div className="inbox-shell h-[calc(100vh-72px)] flex bg-[#06090c] overflow-hidden font-sans text-zinc-100">
       
       {/* 1. Left Panel: Conversation Threads */}
       <div className="w-80 md:w-96 flex flex-col border-r border-zinc-900 bg-[#0c0c0e]">
@@ -574,14 +546,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
               </div>
 
               <div className="flex items-center gap-3">
-                <button
-                  onClick={handleTriggerInboundMock}
-                  className="text-xs bg-zinc-900 text-zinc-300 hover:bg-zinc-800 px-3 py-1.5 rounded-lg font-semibold border border-zinc-800 transition cursor-pointer"
-                  title="Simulate candidate WhatsApp text"
-                >
-                  Mock Inbound Test
-                </button>
-
                 {/* Assignment Selector */}
                 <div className="flex items-center gap-1.5">
                   <User className="h-4 w-4 text-zinc-500" />

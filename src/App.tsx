@@ -410,13 +410,13 @@ export default function App() {
     currentUser.role.replace(/_/g, " ");
 
   return (
-    <div className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
-      <header className="bg-[#0c0c0e] border-b border-zinc-800 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
+    <div className="app-shell min-h-screen text-zinc-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-300">
+      <header className="app-header border-b sticky top-0 z-50">
+        <div className="max-w-[1480px] mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between h-18 items-center gap-5">
             {/* Logo and title */}
             <div className="flex items-center gap-3">
-              <div className="h-10 w-10 bg-emerald-600 rounded-xl flex items-center justify-center font-bold text-white shadow-lg shadow-emerald-900/20">
+              <div className="brand-mark h-10 w-10 rounded-xl flex items-center justify-center font-black text-white tracking-tight">
                 IT
               </div>
 
@@ -432,7 +432,7 @@ export default function App() {
             </div>
 
             {/* Desktop navigation */}
-            <nav className="hidden md:flex items-center gap-1.5">
+            <nav className="hidden xl:flex items-center gap-1 p-1.5 rounded-2xl border border-white/[0.06] bg-black/20">
               {navItems.map((item) => {
                 const Icon = item.icon;
                 const isActive =
@@ -446,10 +446,10 @@ export default function App() {
                       setActivePage(item.id);
                       setMobileMenuOpen(false);
                     }}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-semibold tracking-tight transition flex items-center gap-2 cursor-pointer ${
+                    className={`px-3.5 py-2.5 rounded-xl text-xs font-semibold tracking-tight transition-all duration-200 flex items-center gap-2 cursor-pointer ${
                       isActive
-                        ? "bg-emerald-950/30 text-emerald-400 border border-emerald-800/30 font-bold"
-                        : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+                        ? "bg-emerald-500/12 text-emerald-300 border border-emerald-400/15 shadow-[inset_0_1px_rgba(255,255,255,.05)] font-bold"
+                        : "text-zinc-400 border border-transparent hover:bg-white/[0.04] hover:text-zinc-100"
                     }`}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
@@ -460,7 +460,7 @@ export default function App() {
             </nav>
 
             {/* Desktop user information */}
-            <div className="hidden md:flex items-center gap-4">
+            <div className="hidden xl:flex items-center gap-4">
               <div className="text-right">
                 <span className="font-semibold text-zinc-300 text-xs block">
                   {currentUser.name}
@@ -483,7 +483,7 @@ export default function App() {
             </div>
 
             {/* Mobile menu button */}
-            <div className="flex md:hidden items-center gap-2">
+            <div className="flex xl:hidden items-center gap-2">
               <button
                 type="button"
                 onClick={() =>
@@ -510,7 +510,7 @@ export default function App() {
 
         {/* Mobile navigation */}
         {mobileMenuOpen && (
-          <div className="md:hidden border-t border-zinc-800 bg-[#0c0c0e] px-4 py-3.5 space-y-2">
+          <div className="xl:hidden border-t border-white/[0.06] bg-[#090e12]/95 backdrop-blur-xl px-4 py-3.5 space-y-2 shadow-2xl">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive =

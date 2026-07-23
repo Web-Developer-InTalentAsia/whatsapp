@@ -155,24 +155,24 @@ export default function Login({
   };
 
   return (
-    <div className="min-h-screen bg-[#09090b] flex flex-col justify-center py-12 sm:px-6 lg:px-8 font-sans text-zinc-100">
+    <div className="login-visual login-grid min-h-screen flex flex-col justify-center px-4 py-10 sm:px-6 lg:px-8 font-sans text-zinc-100">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
-        <div className="inline-flex items-center justify-center h-14 w-14 rounded-2xl bg-emerald-600 text-white shadow-lg shadow-emerald-900/20 mb-4">
+        <div className="brand-mark inline-flex items-center justify-center h-14 w-14 rounded-2xl text-white mb-5">
           <MessageSquare className="h-8 w-8" />
         </div>
 
-        <h2 className="text-3xl font-bold text-zinc-100 tracking-tight">
+        <h2 className="text-3xl sm:text-4xl font-bold text-zinc-100 tracking-[-.035em]">
           InTalent WhatsApp Inbox
         </h2>
 
-        <p className="mt-2 text-sm text-zinc-400">
+        <p className="mt-3 text-sm leading-6 text-zinc-400">
           Professional Recruiting Inbox &amp; WhatsApp Cloud API
           Dashboard
         </p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="bg-[#0c0c0e] py-8 px-4 shadow-2xl border border-zinc-800 sm:rounded-2xl sm:px-10">
+        <div className="premium-card py-8 px-5 sm:rounded-[24px] sm:px-10">
           {error && (
             <div
               role="alert"
@@ -213,7 +213,7 @@ export default function Login({
                     value={email}
                     onChange={handleEmailChange}
                     disabled={loading}
-                    className="block w-full pl-10 pr-3 py-2.5 border border-zinc-800 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-zinc-100 sm:text-sm bg-zinc-900/50 placeholder-zinc-600 disabled:opacity-60"
+                    className="block w-full pl-10 pr-3 py-3.5 border border-white/[0.08] rounded-xl focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 text-zinc-100 sm:text-sm bg-white/[0.035] placeholder-zinc-600 disabled:opacity-60 outline-none"
                     placeholder="you@intalent.co"
                   />
                 </div>
@@ -255,7 +255,7 @@ export default function Login({
                     value={password}
                     onChange={handlePasswordChange}
                     disabled={loading}
-                    className="block w-full pl-10 pr-3 py-2.5 border border-zinc-800 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-zinc-100 sm:text-sm bg-zinc-900/50 placeholder-zinc-600 disabled:opacity-60"
+                    className="block w-full pl-10 pr-3 py-3.5 border border-white/[0.08] rounded-xl focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 text-zinc-100 sm:text-sm bg-white/[0.035] placeholder-zinc-600 disabled:opacity-60 outline-none"
                     placeholder="••••••••"
                   />
                 </div>
@@ -264,7 +264,7 @@ export default function Login({
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full flex justify-center items-center px-4 py-2.5 border border-transparent rounded-xl shadow-sm text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 cursor-pointer"
+                className="w-full flex justify-center items-center px-4 py-3.5 border border-emerald-300/10 rounded-xl shadow-[0_12px_30px_rgba(5,150,105,.25)] text-sm font-bold text-white bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 focus:outline-none focus:ring-4 focus:ring-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 cursor-pointer"
               >
                 {loading ? "Authenticating..." : "Sign In"}
 

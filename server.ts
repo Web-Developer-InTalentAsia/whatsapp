@@ -264,6 +264,11 @@ async function sendWhatsAppTextMessage(params: {
 
 // Ensure database has seed data on startup
 async function ensureSeedData() {
+  // Real records must only be created through the application or connected
+  // services. Automatic demo data generation is disabled.
+  return;
+
+  /*
   try {
     const existingUsers = await db.select().from(schema.users).limit(1);
     if (existingUsers.length === 0) {
@@ -538,6 +543,7 @@ async function ensureSeedData() {
   } catch (error) {
     console.error("Error checking or seeding database:", error);
   }
+  */
 }
 
 // Database initialization is awaited inside startServer() before the app starts listening.
@@ -2362,20 +2368,14 @@ app.get("/api/dashboard", authenticateJWT, async (req, res) => {
     const workflowActiveCount = allConvs.filter(c => c.status === "workflow_active").length;
 
     res.json({
-      todayMessages: todayMsg || 5, // fallback if zero
+      todayMessages: todayMsg,
       openConversations: openCount,
       unreadConversations: unreadCount,
-      needingHumanReply: humanHandoverCount || unreadCount,
+      needingHumanReply: humanHandoverCount,
       aiSuggestionsPending,
       workflowActive: workflowActiveCount,
-      numberSummary: [
-        { name: "London Main Office", inbound: 42, outbound: 38 },
-        { name: "Support Line", inbound: 15, outbound: 12 }
-      ],
-      userReplySummary: [
-        { name: "Sarah Connor", manual: 25, ai: 18 },
-        { name: "Alex Mercer", manual: 19, ai: 28 }
-      ]
+      numberSummary: [],
+      userReplySummary: []
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

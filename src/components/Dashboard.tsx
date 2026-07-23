@@ -100,11 +100,13 @@ export default function Dashboard({ token, onNavigateToInbox }: DashboardProps) 
   ];
 
   return (
-    <div className="space-y-8 max-w-7xl mx-auto p-4 md:p-6 font-sans">
+    <div className="space-y-8 max-w-[1480px] mx-auto p-4 sm:p-6 lg:p-8 font-sans">
       {/* Title block */}
-      <div>
-        <h1 className="text-2xl font-bold text-zinc-100 tracking-tight">Recruiting Operations Dashboard</h1>
-        <p className="text-sm text-zinc-400 mt-1">
+      <div className="relative overflow-hidden rounded-[28px] border border-white/[0.07] bg-gradient-to-br from-emerald-500/[0.09] via-[#10171d] to-[#0b1014] p-6 sm:p-8 shadow-2xl">
+        <div className="absolute -right-16 -top-24 h-64 w-64 rounded-full bg-emerald-500/10 blur-3xl" />
+        <div className="relative mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-400/15 bg-emerald-400/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[.16em] text-emerald-300"><Activity className="h-3.5 w-3.5" /> Live operations</div>
+        <h1 className="relative text-2xl sm:text-3xl font-bold text-zinc-100 tracking-[-.03em]">Recruiting Operations Dashboard</h1>
+        <p className="relative text-sm text-zinc-400 mt-2 max-w-2xl leading-6">
           Real-time metrics for InTalent WhatsApp business lines, AI assistance, and active workflows.
         </p>
       </div>
@@ -117,7 +119,7 @@ export default function Dashboard({ token, onNavigateToInbox }: DashboardProps) 
             <div
               key={card.title}
               onClick={onNavigateToInbox}
-              className="bg-[#0c0c0e] p-6 rounded-2xl border border-zinc-800 hover:border-zinc-700 shadow-xl transition duration-150 cursor-pointer group flex items-center justify-between"
+              className="metric-card p-5 sm:p-6 rounded-2xl transition-all duration-200 cursor-pointer group flex items-center justify-between"
             >
               <div>
                 <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">{card.title}</p>
@@ -137,7 +139,7 @@ export default function Dashboard({ token, onNavigateToInbox }: DashboardProps) 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
         {/* WhatsApp Line Activity Summary */}
-        <div className="bg-[#0c0c0e] p-6 rounded-2xl border border-zinc-800 shadow-xl">
+        <div className="premium-card p-5 sm:p-6 rounded-2xl">
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-semibold text-zinc-200 flex items-center gap-2 text-base">
               <Phone className="h-5 w-5 text-emerald-400" />
@@ -168,7 +170,7 @@ export default function Dashboard({ token, onNavigateToInbox }: DashboardProps) 
         </div>
 
         {/* Recruiter / Agent Performance */}
-        <div className="bg-[#0c0c0e] p-6 rounded-2xl border border-zinc-800 shadow-xl">
+        <div className="premium-card p-5 sm:p-6 rounded-2xl">
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-semibold text-zinc-200 flex items-center gap-2 text-base">
               <Star className="h-5 w-5 text-amber-400" />
@@ -201,7 +203,7 @@ export default function Dashboard({ token, onNavigateToInbox }: DashboardProps) 
       </div>
 
       {/* Bottom CTA block */}
-      <div className="bg-emerald-950/30 border border-emerald-800/50 text-zinc-100 rounded-2xl p-6 md:p-8 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
+      <div className="relative overflow-hidden bg-gradient-to-r from-emerald-950/70 to-cyan-950/30 border border-emerald-500/20 text-zinc-100 rounded-2xl p-6 md:p-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-5 shadow-2xl">
         <div>
           <h4 className="text-lg font-semibold tracking-tight text-emerald-400">Active Candidate Conversations Awaiting Reply</h4>
           <p className="text-sm text-zinc-400 mt-1">
