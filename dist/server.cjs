@@ -1634,7 +1634,8 @@ app.post("/api/messages/send", authenticateJWT, async (req, res) => {
         messageType: "text",
         replyType: replyType || "manual",
         status: "failed",
-        agentId: req.user.id
+        agentId: req.user.id,
+        timestamp: /* @__PURE__ */ new Date()
       });
       await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
       await auditLog(
@@ -1653,7 +1654,8 @@ app.post("/api/messages/send", authenticateJWT, async (req, res) => {
       messageType: "text",
       replyType: replyType || "manual",
       status: "sent",
-      agentId: req.user.id
+      agentId: req.user.id,
+      timestamp: /* @__PURE__ */ new Date()
     }).returning();
     await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
     await auditLog(
@@ -1734,6 +1736,8 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
     if (!from || !text2) {
       return res.status(200).json({ status: "ignored", reason: "missing sender or supported message content" });
     }
+    const metaTimestampSeconds = Number(msg.timestamp);
+    const receivedAt = Number.isFinite(metaTimestampSeconds) && metaTimestampSeconds > 0 ? new Date(metaTimestampSeconds * 1e3) : /* @__PURE__ */ new Date();
     let [contact] = await db.select().from(schema_exports.contacts).where((0, import_drizzle_orm2.and)(
       (0, import_drizzle_orm2.eq)(schema_exports.contacts.phoneNumber, from),
       (0, import_drizzle_orm2.eq)(schema_exports.contacts.sourceNumberId, numId)
@@ -1758,10 +1762,10 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
         contactId: contact.id,
         whatsappNumberId: numId,
         status: "unread",
-        lastMessageAt: /* @__PURE__ */ new Date()
+        lastMessageAt: receivedAt
       }).returning();
     } else {
-      await db.update(schema_exports.conversations).set({ status: "unread", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
+      await db.update(schema_exports.conversations).set({ status: "unread", lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
     }
     const [newMsg] = await db.insert(schema_exports.messages).values({
       conversationId: conv.id,
@@ -1769,7 +1773,8 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
       senderName: contact.name || from,
       content: text2,
       messageType: messageType === "document" ? "document" : text2.toLowerCase().endsWith(".pdf") || text2.toLowerCase().includes("resume") || text2.toLowerCase().includes("cv") ? "cv" : "text",
-      status: "received"
+      status: "received",
+      timestamp: receivedAt
     }).returning();
     const isWfHandled = await runWorkflowStep(conv.id, numId, text2, contact.id);
     if (!isWfHandled) {
@@ -1778,7 +1783,7 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
         await db.update(schema_exports.conversations).set({ status: "ai_suggested" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
       }
     }
-    await db.update(schema_exports.conversations).set({ status: "unread", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
+    await db.update(schema_exports.conversations).set({ status: "unread", lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
     console.log(`Successfully ingested incoming message event from ${from}!`);
     res.status(200).json({ success: true, messageId: newMsg.id });
   } catch (error) {
