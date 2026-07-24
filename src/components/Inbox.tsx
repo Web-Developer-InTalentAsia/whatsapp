@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { 
   Search, MessageCircle, AlertCircle, Sparkles, Send, Clock, User, Check,
   Tags, Info, CheckCircle2, ChevronRight, CornerDownRight, ThumbsUp, ThumbsDown,
@@ -98,6 +98,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const [allUsers, setAllUsers] = useState<any[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Fetch conversations list
   const fetchConversations = async (selectedIdToKeep?: number) => {
@@ -290,10 +291,26 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     }
   };
 
-  // Auto-scroll to message end
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  // Open every thread at its newest message. Setting the scroll container
+  // directly is more reliable than scrollIntoView while the flex layout and
+  // media previews are still settling.
+  useLayoutEffect(() => {
+    if (loadingChat || messages.length === 0) return;
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const scrollToLatest = () => {
+      container.scrollTop = container.scrollHeight;
+    };
+    scrollToLatest();
+    const frameId = window.requestAnimationFrame(scrollToLatest);
+    const timeoutId = window.setTimeout(scrollToLatest, 150);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [selectedConversation?.id, loadingChat, messages.length]);
 
   // Quick Replies functions
   const handleTextareaChange = (val: string) => {
@@ -850,7 +867,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
             </div>
 
             {/* Chat message list area */}
-            <div className="flex-1 overflow-y-auto p-6 bg-[#060608] space-y-4">
+            <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto p-6 bg-[#060608] space-y-4">
               {loadingChat ? (
                 <div className="text-center py-20 text-zinc-500 text-sm">Loading full chat log...</div>
               ) : messages.length === 0 ? (
