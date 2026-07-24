@@ -104,6 +104,19 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     fetchAllUsers();
   }, [filter, assignedToMe, search, token]);
 
+  // Keep the thread rail in sync with inbound webhook messages. The webhook
+  // marks the conversation as unread; polling makes that state visible without
+  // requiring the recruiter to manually refresh the inbox.
+  useEffect(() => {
+    const refreshInterval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchConversations();
+      }
+    }, 5000);
+
+    return () => window.clearInterval(refreshInterval);
+  }, [filter, assignedToMe, search, token, selectedConversation?.id]);
+
   // Handle selected conversation change
   const handleSelectConversation = async (conv: Conversation) => {
     setLoadingChat(true);
@@ -488,15 +501,31 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                 <div
                   key={conv.id}
                   onClick={() => handleSelectConversation(conv)}
-                  className={`p-4 transition cursor-pointer hover:bg-zinc-900/40 flex flex-col gap-1.5 ${
-                    isSelected ? "bg-zinc-900 border-l-4 border-emerald-500 hover:bg-zinc-900" : ""
+                  className={`relative p-4 transition cursor-pointer flex flex-col gap-1.5 ${
+                    conv.status === "unread"
+                      ? "bg-emerald-950/25 border-l-4 border-emerald-400 hover:bg-emerald-950/40"
+                      : "hover:bg-zinc-900/40 border-l-4 border-transparent"
+                  } ${
+                    isSelected ? "ring-1 ring-inset ring-emerald-500/50" : ""
                   }`}
                 >
                   <div className="flex justify-between items-start">
-                    <h4 className="font-semibold text-zinc-200 text-sm truncate max-w-[150px]">
-                      {conv.contactName || conv.contactPhone}
-                    </h4>
-                    <span className="text-xs text-zinc-500 shrink-0">{formattedTime}</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      {conv.status === "unread" && (
+                        <span
+                          className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)] shrink-0"
+                          aria-label="Unread conversation"
+                        />
+                      )}
+                      <h4 className={`text-sm truncate max-w-[150px] ${
+                        conv.status === "unread" ? "font-bold text-white" : "font-semibold text-zinc-200"
+                      }`}>
+                        {conv.contactName || conv.contactPhone}
+                      </h4>
+                    </div>
+                    <span className={`text-xs shrink-0 ${
+                      conv.status === "unread" ? "font-semibold text-emerald-300" : "text-zinc-500"
+                    }`}>{formattedTime}</span>
                   </div>
 
                   <p className="text-xs text-zinc-500 truncate font-mono">
@@ -606,11 +635,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                               : "bg-emerald-600 text-white rounded-tr-none"
                           }`}
                         >
-                          {/* Sender label */}
-                          <div className={`text-[10px] font-bold mb-1.5 ${isContact ? "text-zinc-500" : "text-emerald-200"}`}>
-                            {m.senderName}
-                          </div>
-                          
                           <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.content}</p>
                           
                           {/* Micro indicator of replies */}

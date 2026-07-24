@@ -2023,6 +2023,7 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
         replyType: replyType || "manual",
         status: "failed",
         agentId: req.user.id,
+        timestamp: new Date(),
       });
 
       await db
@@ -2052,6 +2053,7 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
         replyType: replyType || "manual",
         status: "sent",
         agentId: req.user.id,
+        timestamp: new Date(),
       })
       .returning();
 
@@ -2170,6 +2172,12 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
       return res.status(200).json({ status: "ignored", reason: "missing sender or supported message content" });
     }
 
+    const metaTimestampSeconds = Number(msg.timestamp);
+    const receivedAt =
+      Number.isFinite(metaTimestampSeconds) && metaTimestampSeconds > 0
+        ? new Date(metaTimestampSeconds * 1000)
+        : new Date();
+
     // 1. Find or Create Contact
     let [contact] = await db.select().from(schema.contacts)
       .where(and(
@@ -2204,12 +2212,12 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
         contactId: contact.id,
         whatsappNumberId: numId,
         status: "unread",
-        lastMessageAt: new Date(),
+        lastMessageAt: receivedAt,
       }).returning();
     } else {
       // Set status as unread and update timestamp
       await db.update(schema.conversations)
-        .set({ status: "unread", lastMessageAt: new Date() })
+        .set({ status: "unread", lastMessageAt: receivedAt })
         .where(eq(schema.conversations.id, conv.id));
     }
 
@@ -2221,6 +2229,7 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
       content: text,
       messageType: messageType === "document" ? "document" : (text.toLowerCase().endsWith(".pdf") || text.toLowerCase().includes("resume") || text.toLowerCase().includes("cv") ? "cv" : "text"),
       status: "received",
+      timestamp: receivedAt,
     }).returning();
 
     // 4. Trigger Workflow Engine Check
@@ -2235,6 +2244,13 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
           .where(eq(schema.conversations.id, conv.id));
       }
     }
+
+    // An inbound message must remain visibly unread after workflow/AI processing.
+    // Those handlers can update the conversation status while they run, so make
+    // unread the final state until a recruiter opens the thread.
+    await db.update(schema.conversations)
+      .set({ status: "unread", lastMessageAt: receivedAt })
+      .where(eq(schema.conversations.id, conv.id));
 
     console.log(`Successfully ingested incoming message event from ${from}!`);
     res.status(200).json({ success: true, messageId: newMsg.id });

@@ -1778,6 +1778,7 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
         await db.update(schema_exports.conversations).set({ status: "ai_suggested" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
       }
     }
+    await db.update(schema_exports.conversations).set({ status: "unread", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
     console.log(`Successfully ingested incoming message event from ${from}!`);
     res.status(200).json({ success: true, messageId: newMsg.id });
   } catch (error) {
