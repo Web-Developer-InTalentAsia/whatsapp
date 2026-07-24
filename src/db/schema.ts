@@ -90,6 +90,10 @@ export const messages = pgTable('messages', {
   deletedForEveryone: boolean('deleted_for_everyone').notNull().default(false),
   metaMessageId: text('meta_message_id'),
   replyContextMetaMessageId: text('reply_context_meta_message_id'),
+  metaMediaId: text('meta_media_id'),
+  mediaMimeType: text('media_mime_type'),
+  mediaFilename: text('media_filename'),
+  mediaCaption: text('media_caption'),
 });
 
 export const messageUserStates = pgTable('message_user_states', {

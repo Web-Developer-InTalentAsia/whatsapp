@@ -4,12 +4,59 @@ import {
   Tags, Info, CheckCircle2, ChevronRight, CornerDownRight, ThumbsUp, ThumbsDown,
   RefreshCw, Clipboard, Paperclip, CheckSquare, Plus, Lock, Calendar, Zap,
   MoreVertical, Reply, Forward, Pin, Star, X
+  , Mic, Square, FileText, Download
 } from "lucide-react";
 import { Contact, Conversation, Message } from "../types.ts";
 
 interface InboxProps {
   token: string;
   currentUser: any;
+}
+
+function MessageMedia({ message, token }: { message: Message; token: string }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    if (!message.metaMediaId) return;
+    let objectUrl = "";
+    let stopped = false;
+    void fetch(`/api/messages/${message.id}/media`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(response => {
+        if (!response.ok) throw new Error("Media download failed.");
+        return response.blob();
+      })
+      .then(blob => {
+        if (stopped) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(error => console.error(error));
+    return () => {
+      stopped = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [message.id, message.metaMediaId, token]);
+
+  if (!url) {
+    return <div className="mb-2 h-16 min-w-48 rounded-lg bg-black/20 animate-pulse flex items-center justify-center text-xs opacity-60">Loading attachment…</div>;
+  }
+  if (message.messageType === "image" || message.messageType === "sticker") {
+    return <img src={url} alt={message.mediaCaption || "WhatsApp image"} className={`mb-2 rounded-lg max-h-72 object-contain ${message.messageType === "sticker" ? "max-w-40 bg-transparent" : "max-w-full"}`} />;
+  }
+  if (message.messageType === "video") {
+    return <video src={url} controls preload="metadata" className="mb-2 rounded-lg max-h-72 max-w-full" />;
+  }
+  if (message.messageType === "audio") {
+    return <audio src={url} controls preload="metadata" className="mb-2 max-w-full h-10" />;
+  }
+  return (
+    <a href={url} download={message.mediaFilename || "attachment"} className="mb-2 flex items-center gap-3 rounded-lg bg-black/20 p-3 hover:bg-black/30">
+      <FileText className="h-6 w-6 shrink-0" />
+      <span className="text-xs truncate flex-1">{message.mediaFilename || "Document"}</span>
+      <Download className="h-4 w-4 shrink-0" />
+    </a>
+  );
 }
 
 export default function Inbox({ token, currentUser }: InboxProps) {
@@ -30,6 +77,11 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null);
+  const [attachment, setAttachment] = useState<{ filename: string; mimeType: string; data: string } | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
 
   // Quick Replies State
   const [quickReplies, setQuickReplies] = useState<any[]>([]);
@@ -309,9 +361,59 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     setShowQuickRepliesButtonMenu(false);
   };
 
+  const selectAttachment = (file?: File) => {
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) {
+      alert("Attachments must be 20 MB or smaller.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setAttachment({
+      filename: file.name,
+      mimeType: file.type || "application/octet-stream",
+      data: String(reader.result || ""),
+    });
+    reader.readAsDataURL(file);
+  };
+
+  const toggleVoiceRecording = async () => {
+    if (isRecording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      recordingChunksRef.current = [];
+      recorder.ondataavailable = event => {
+        if (event.data.size) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordingChunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
+        const reader = new FileReader();
+        reader.onload = () => setAttachment({
+          filename: `voice-message-${Date.now()}.webm`,
+          mimeType: blob.type || "audio/webm",
+          data: String(reader.result || ""),
+        });
+        reader.readAsDataURL(blob);
+        stream.getTracks().forEach(track => track.stop());
+        setIsRecording(false);
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error("Microphone error:", error);
+      alert("Microphone access is required to record a voice message.");
+    }
+  };
+
   // Send Message
   const handleSendMessage = async (text: string, replyType: 'manual' | 'ai' | 'workflow' = 'manual') => {
-    if (!selectedConversation || !text.trim() || !contact) return;
+    if (!selectedConversation || (!text.trim() && !attachment) || !contact) return;
     setSendingReply(true);
 
     try {
@@ -328,6 +430,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
           messageText: text,
           replyType,
           replyToMessageId: replyingTo?.id || null,
+          media: attachment,
         })
       });
 
@@ -358,6 +461,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
         } : null,
       }]);
       setReplyText("");
+      setAttachment(null);
       setReplyingTo(null);
       setSuggestions([]); // Clear suggestions upon reply
 
@@ -850,6 +954,10 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                             </div>
                           )}
 
+                          {m.metaMediaId && (
+                            <MessageMedia message={m} token={token} />
+                          )}
+
                           {m.deletedForEveryone ? (
                             <p className={`text-sm italic ${isContact ? "text-zinc-500" : "text-emerald-100"}`}>
                               This message was deleted
@@ -1027,6 +1135,19 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   )}
                 </div>
               ) : (
+                <>
+                {attachment && (
+                  <div className="mb-2 flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2">
+                    <Paperclip className="h-4 w-4 text-emerald-400 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-semibold text-zinc-200">{attachment.filename}</div>
+                      <div className="text-[10px] text-zinc-500">{attachment.mimeType}</div>
+                    </div>
+                    <button type="button" onClick={() => setAttachment(null)} className="p-1 text-zinc-500 hover:text-zinc-200">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -1035,6 +1156,24 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   className="flex gap-3 items-end"
                 >
                   <div className="flex-1 bg-zinc-900 border border-zinc-850 rounded-xl px-4 py-2 flex items-center gap-3">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip"
+                      onChange={event => {
+                        selectAttachment(event.target.files?.[0]);
+                        event.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="p-1.5 rounded-lg text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800"
+                      title="Attach photo, video, audio, or document"
+                    >
+                      <Paperclip className="h-4 w-4" />
+                    </button>
                     <textarea
                       rows={1}
                       placeholder="Type a manual candidate reply (type '/' for templates)..."
@@ -1043,6 +1182,18 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                       onKeyDown={handleKeyDown}
                       className="flex-1 bg-transparent border-0 outline-none text-sm text-zinc-100 focus:ring-0 resize-none max-h-24 font-sans py-1 placeholder-zinc-500"
                     />
+                    <button
+                      type="button"
+                      onClick={() => void toggleVoiceRecording()}
+                      className={`p-1.5 rounded-lg transition ${
+                        isRecording
+                          ? "bg-rose-500 text-white animate-pulse"
+                          : "text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800"
+                      }`}
+                      title={isRecording ? "Stop voice recording" : "Record voice message"}
+                    >
+                      {isRecording ? <Square className="h-4 w-4 fill-current" /> : <Mic className="h-4 w-4" />}
+                    </button>
                     {quickReplies.length > 0 && (
                       <button
                         type="button"
@@ -1061,12 +1212,13 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   </div>
                   <button
                     type="submit"
-                    disabled={sendingReply || !replyText.trim()}
+                    disabled={sendingReply || (!replyText.trim() && !attachment)}
                     className="h-11 w-11 shrink-0 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-xl flex items-center justify-center transition shadow-lg shadow-emerald-950/20 cursor-pointer"
                   >
                     <Send className="h-5 w-5" />
                   </button>
                 </form>
+                </>
               )}
             </div>
           </>

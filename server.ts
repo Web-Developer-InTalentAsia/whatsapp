@@ -31,7 +31,9 @@ const JWT_SECRET =
 
 // Middlewares
 app.use(express.json({
-  limit: "1mb",
+  // Media is accepted as base64 JSON and uploaded directly to Meta. WhatsApp
+  // media limits vary by type; cap application requests to a safe 30 MB.
+  limit: "30mb",
   verify: (req: any, _res, buffer) => {
     req.rawBody = Buffer.from(buffer);
   },
@@ -264,6 +266,95 @@ async function sendWhatsAppTextMessage(params: {
   }
 
   return data;
+}
+
+type WhatsAppMediaType = "image" | "video" | "audio" | "document" | "sticker";
+
+async function uploadWhatsAppMedia(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  buffer: Buffer;
+  mimeType: string;
+  filename: string;
+}) {
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", params.mimeType);
+  form.append(
+    "file",
+    new Blob([params.buffer], { type: params.mimeType }),
+    params.filename,
+  );
+
+  const response = await fetch(
+    `https://graph.facebook.com/${META_GRAPH_VERSION}/${params.phoneNumberId}/media`,
+    {
+      method: "POST",
+      signal: AbortSignal.timeout(META_API_TIMEOUT_MS * 2),
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+      body: form,
+    },
+  );
+  const data = await parseMetaResponse(response);
+  if (!response.ok) throwMetaApiError(data, response.status);
+  return String(data?.id || "").trim();
+}
+
+async function sendWhatsAppMediaMessage(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
+  mediaType: WhatsAppMediaType;
+  mediaId: string;
+  caption?: string;
+  filename?: string;
+  replyToMetaMessageId?: string | null;
+}) {
+  const mediaPayload: Record<string, string> = { id: params.mediaId };
+  if (
+    params.caption &&
+    ["image", "video", "document"].includes(params.mediaType)
+  ) {
+    mediaPayload.caption = params.caption;
+  }
+  if (params.filename && params.mediaType === "document") {
+    mediaPayload.filename = params.filename;
+  }
+
+  const payload = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: normalizeWhatsAppNumber(params.to),
+    ...(params.replyToMetaMessageId
+      ? { context: { message_id: params.replyToMetaMessageId } }
+      : {}),
+    type: params.mediaType,
+    [params.mediaType]: mediaPayload,
+  };
+
+  const response = await fetch(
+    `https://graph.facebook.com/${META_GRAPH_VERSION}/${params.phoneNumberId}/messages`,
+    {
+      method: "POST",
+      signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
+      headers: {
+        Authorization: `Bearer ${params.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+  const data = await parseMetaResponse(response);
+  if (!response.ok) throwMetaApiError(data, response.status);
+  return data;
+}
+
+function inferWhatsAppMediaType(mimeType: string): WhatsAppMediaType {
+  if (mimeType === "image/webp") return "sticker";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/")) return "audio";
+  return "document";
 }
 
 // Ensure database has seed data on startup
@@ -557,7 +648,11 @@ async function ensureMessageActionSchema() {
       ADD COLUMN IF NOT EXISTS forwarded_from_message_id integer,
       ADD COLUMN IF NOT EXISTS deleted_for_everyone boolean NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS meta_message_id text,
-      ADD COLUMN IF NOT EXISTS reply_context_meta_message_id text
+      ADD COLUMN IF NOT EXISTS reply_context_meta_message_id text,
+      ADD COLUMN IF NOT EXISTS meta_media_id text,
+      ADD COLUMN IF NOT EXISTS media_mime_type text,
+      ADD COLUMN IF NOT EXISTS media_filename text,
+      ADD COLUMN IF NOT EXISTS media_caption text
   `);
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS message_user_states (
@@ -1648,6 +1743,60 @@ app.get("/api/conversations/:id/messages", authenticateJWT, async (req: any, res
   }
 });
 
+app.get("/api/messages/:id/media", authenticateJWT, async (req: any, res) => {
+  const messageId = Number(req.params.id);
+  if (!Number.isInteger(messageId)) {
+    return res.status(400).json({ error: "Invalid message ID." });
+  }
+
+  try {
+    const [record] = await db.select({
+      mediaId: schema.messages.metaMediaId,
+      mimeType: schema.messages.mediaMimeType,
+      filename: schema.messages.mediaFilename,
+      accessToken: schema.whatsappNumbers.accessToken,
+    })
+      .from(schema.messages)
+      .innerJoin(schema.conversations, eq(schema.messages.conversationId, schema.conversations.id))
+      .innerJoin(schema.whatsappNumbers, eq(schema.conversations.whatsappNumberId, schema.whatsappNumbers.id))
+      .where(eq(schema.messages.id, messageId))
+      .limit(1);
+
+    if (!record?.mediaId) {
+      return res.status(404).json({ error: "This message has no media attachment." });
+    }
+
+    const metadataResponse = await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/${record.mediaId}`,
+      {
+        headers: { Authorization: `Bearer ${record.accessToken}` },
+        signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
+      },
+    );
+    const metadata = await parseMetaResponse(metadataResponse);
+    if (!metadataResponse.ok) throwMetaApiError(metadata, metadataResponse.status);
+
+    const mediaResponse = await fetch(metadata.url, {
+      headers: { Authorization: `Bearer ${record.accessToken}` },
+      signal: AbortSignal.timeout(META_API_TIMEOUT_MS * 2),
+    });
+    if (!mediaResponse.ok) {
+      return res.status(502).json({ error: "Meta media download failed." });
+    }
+
+    const mimeType = record.mimeType || metadata.mime_type || "application/octet-stream";
+    const safeFilename = String(record.filename || `whatsapp-media-${messageId}`)
+      .replace(/[\r\n"]/g, "_");
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Content-Disposition", `inline; filename="${safeFilename}"`);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    return res.send(Buffer.from(await mediaResponse.arrayBuffer()));
+  } catch (error: any) {
+    const routeError = getMetaRouteError(error);
+    return res.status(routeError.status).json(routeError.body);
+  }
+});
+
 app.patch("/api/messages/:id/state", authenticateJWT, async (req: any, res) => {
   const messageId = Number(req.params.id);
   const { isStarred, isPinned } = req.body;
@@ -2003,9 +2152,12 @@ async function runWorkflowStep(convId: number, numId: number, incomingText: stri
 
 // --- SEND MESSAGE API WITH REAL META WHATSAPP CLOUD API ---
 app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
-  const { conversationId, whatsappNumberId, recipientPhone, messageText, replyType, replyToMessageId, forwardedFromMessageId } = req.body;
+  const {
+    conversationId, whatsappNumberId, recipientPhone, messageText = "",
+    replyType, replyToMessageId, forwardedFromMessageId, media,
+  } = req.body;
 
-  if (!conversationId || !whatsappNumberId || !messageText) {
+  if (!conversationId || !whatsappNumberId || (!String(messageText).trim() && !media?.data)) {
     return res.status(400).json({ error: "Missing required payload fields." });
   }
 
@@ -2115,18 +2267,52 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
     }
 
     const quotedFallback = repliedMessage && !repliedMessage.metaMessageId
-      ? `↪ Replying to ${repliedMessage.senderName}: “${repliedMessage.content.slice(0, 240)}${repliedMessage.content.length > 240 ? "…" : ""}”\n\n${messageText}`
-      : messageText;
+      ? `Replying to ${repliedMessage.senderName}: "${repliedMessage.content.slice(0, 240)}${repliedMessage.content.length > 240 ? "..." : ""}"\n\n${messageText}`
+      : String(messageText);
 
     // 5. Send the real WhatsApp message through Meta Cloud API first
     try {
-      const metaResult = await sendWhatsAppTextMessage({
-        phoneNumberId: waNumber.phoneNumberId,
-        accessToken: waNumber.accessToken,
-        to: destinationPhone,
-        body: quotedFallback,
-        replyToMetaMessageId: repliedMessage?.metaMessageId || null,
-      });
+      let mediaType: WhatsAppMediaType | null = null;
+      let uploadedMediaId: string | null = null;
+      let mediaMimeType: string | null = null;
+      let mediaFilename: string | null = null;
+      let metaResult: any;
+
+      if (media?.data) {
+        mediaMimeType = String(media.mimeType || "application/octet-stream");
+        mediaFilename = String(media.filename || "attachment");
+        const base64 = String(media.data).replace(/^data:[^;]+;base64,/, "");
+        const mediaBuffer = Buffer.from(base64, "base64");
+        if (!mediaBuffer.length || mediaBuffer.length > 20 * 1024 * 1024) {
+          return res.status(400).json({ error: "Attachment must be between 1 byte and 20 MB." });
+        }
+        mediaType = inferWhatsAppMediaType(mediaMimeType);
+        uploadedMediaId = await uploadWhatsAppMedia({
+          phoneNumberId: waNumber.phoneNumberId,
+          accessToken: waNumber.accessToken,
+          buffer: mediaBuffer,
+          mimeType: mediaMimeType,
+          filename: mediaFilename,
+        });
+        metaResult = await sendWhatsAppMediaMessage({
+          phoneNumberId: waNumber.phoneNumberId,
+          accessToken: waNumber.accessToken,
+          to: destinationPhone,
+          mediaType,
+          mediaId: uploadedMediaId,
+          caption: quotedFallback.trim(),
+          filename: mediaFilename,
+          replyToMetaMessageId: repliedMessage?.metaMessageId || null,
+        });
+      } else {
+        metaResult = await sendWhatsAppTextMessage({
+          phoneNumberId: waNumber.phoneNumberId,
+          accessToken: waNumber.accessToken,
+          to: destinationPhone,
+          body: quotedFallback,
+          replyToMetaMessageId: repliedMessage?.metaMessageId || null,
+        });
+      }
       const sentMetaMessageId = String(metaResult?.messages?.[0]?.id || "").trim() || null;
 
       // 6. Save outgoing message only after successful Meta send
@@ -2136,8 +2322,8 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
           conversationId: convId,
           sender: "agent",
           senderName: req.user.name,
-          content: messageText,
-          messageType: "text",
+          content: String(messageText) || mediaFilename || "Attachment",
+          messageType: mediaType || "text",
           replyType: replyType || "manual",
           status: "sent",
           agentId: req.user.id,
@@ -2145,6 +2331,10 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
           replyToMessageId: replyToMessageId || null,
           forwardedFromMessageId: forwardedFromMessageId || null,
           metaMessageId: sentMetaMessageId,
+          metaMediaId: uploadedMediaId,
+          mediaMimeType,
+          mediaFilename,
+          mediaCaption: String(messageText) || null,
         })
         .returning();
 
@@ -2167,8 +2357,8 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
         conversationId: convId,
         sender: "agent",
         senderName: req.user.name,
-        content: messageText,
-        messageType: "text",
+        content: String(messageText) || String(media?.filename || "Attachment"),
+        messageType: media?.data ? inferWhatsAppMediaType(String(media.mimeType || "")) : "text",
         replyType: replyType || "manual",
         status: "failed",
         agentId: req.user.id,
@@ -2262,6 +2452,10 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
     let text = "";
     let contactName = "";
     let messageType = "text";
+    let metaMediaId: string | null = null;
+    let mediaMimeType: string | null = null;
+    let mediaFilename: string | null = null;
+    let mediaCaption: string | null = null;
 
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
     const msg = value?.messages?.[0];
@@ -2284,6 +2478,20 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
         msg.interactive?.button_reply?.title ||
         msg.interactive?.list_reply?.title ||
         "";
+    } else if (["image", "video", "audio", "document", "sticker"].includes(messageType)) {
+      const mediaPayload = msg[messageType] || {};
+      metaMediaId = String(mediaPayload.id || "").trim() || null;
+      mediaMimeType = String(mediaPayload.mime_type || "").trim() || null;
+      mediaFilename = String(mediaPayload.filename || "").trim() || null;
+      mediaCaption = String(mediaPayload.caption || "").trim() || null;
+      text =
+        mediaCaption ||
+        mediaFilename ||
+        `[${messageType} attachment]`;
+    } else if (messageType === "location") {
+      text = [msg.location?.name, msg.location?.address]
+        .filter(Boolean)
+        .join(" - ") || `${msg.location?.latitude || ""}, ${msg.location?.longitude || ""}`;
     } else {
       text = `[${messageType} message received]`;
     }
@@ -2357,12 +2565,18 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
       sender: "contact",
       senderName: contact.name || from,
       content: text,
-      messageType: messageType === "document" ? "document" : (text.toLowerCase().endsWith(".pdf") || text.toLowerCase().includes("resume") || text.toLowerCase().includes("cv") ? "cv" : "text"),
+      messageType: ["image", "video", "audio", "document", "sticker", "location"].includes(messageType)
+        ? messageType
+        : (text.toLowerCase().endsWith(".pdf") || text.toLowerCase().includes("resume") || text.toLowerCase().includes("cv") ? "cv" : "text"),
       status: "received",
       timestamp: receivedAt,
       metaMessageId: String(msg.id || "").trim() || null,
       replyToMessageId,
       replyContextMetaMessageId: repliedMetaMessageId || null,
+      metaMediaId,
+      mediaMimeType,
+      mediaFilename,
+      mediaCaption,
     }).returning();
 
     // 4. Trigger Workflow Engine Check

@@ -62,7 +62,7 @@ export interface Message {
   sender: 'contact' | 'agent' | 'system';
   senderName: string;
   content: string;
-  messageType: 'text' | 'document' | 'cv' | 'location';
+  messageType: 'text' | 'document' | 'cv' | 'location' | 'image' | 'video' | 'audio' | 'sticker';
   replyType: 'manual' | 'ai' | 'workflow' | 'none';
   status: 'sent' | 'received' | 'failed';
   timestamp: string;
@@ -76,6 +76,10 @@ export interface Message {
   metaMessageId?: string | null;
   replyContextMetaMessageId?: string | null;
   hasUnmatchedReplyContext?: boolean;
+  metaMediaId?: string | null;
+  mediaMimeType?: string | null;
+  mediaFilename?: string | null;
+  mediaCaption?: string | null;
   repliedMessage?: {
     id: number;
     senderName: string;
