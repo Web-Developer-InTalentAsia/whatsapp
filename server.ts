@@ -2222,37 +2222,6 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
       return res.status(400).json({ error: "Phone Number ID or Access Token is missing in WhatsApp settings." });
     }
 
-    // 4. Check the 24-hour customer service window
-    const [lastIncoming] = await db
-      .select()
-      .from(schema.messages)
-      .where(
-        and(
-          eq(schema.messages.conversationId, convId),
-          eq(schema.messages.sender, "contact")
-        )
-      )
-      .orderBy(desc(schema.messages.id))
-      .limit(1);
-
-    if (!lastIncoming) {
-      return res.status(400).json({
-        error: "Cannot send reply. No inbound message has been received from this contact yet.",
-      });
-    }
-
-    const lastTime = new Date(lastIncoming.timestamp || "").getTime();
-    if (!Number.isFinite(lastTime)) {
-      return res.status(400).json({ error: "Last inbound message timestamp is invalid." });
-    }
-
-    const hoursDiff = (Date.now() - lastTime) / (1000 * 60 * 60);
-    if (hoursDiff > 24) {
-      return res.status(400).json({
-        error: "Cannot send free-form reply. The 24-hour customer service window has expired. Template messages are not enabled in this version.",
-      });
-    }
-
     let repliedMessage: typeof schema.messages.$inferSelect | null = null;
     if (replyToMessageId) {
       const [foundRepliedMessage] = await db.select().from(schema.messages)

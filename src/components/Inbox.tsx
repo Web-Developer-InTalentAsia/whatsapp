@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Search, MessageCircle, AlertCircle, Sparkles, Send, Clock, User, Check,
   Tags, Info, CheckCircle2, ChevronRight, CornerDownRight, ThumbsUp, ThumbsDown,
-  RefreshCw, Clipboard, Paperclip, CheckSquare, Plus, Lock, Calendar, Zap,
+  RefreshCw, Clipboard, Paperclip, CheckSquare, Plus, Calendar, Zap,
   MoreVertical, Reply, Forward, Pin, Star, X
   , Mic, Square, FileText, Download
 } from "lucide-react";
@@ -96,10 +96,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
   // Users for assignment selection
   const [allUsers, setAllUsers] = useState<any[]>([]);
-
-  // 24 hour state
-  const [isPast24Hours, setIsPast24Hours] = useState(false);
-  const [lastIncomingTime, setLastIncomingTime] = useState<Date | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -243,22 +239,9 @@ export default function Inbox({ token, currentUser }: InboxProps) {
         const mData = await mRes.json();
         setMessages(mData);
 
-        // 3. Compute 24 hours window
-        const incoming = mData.filter((m: any) => m.sender === "contact");
-        if (incoming.length > 0) {
-          const lastIncomingMsg = incoming[incoming.length - 1];
-          const lastTime = new Date(lastIncomingMsg.timestamp);
-          setLastIncomingTime(lastTime);
-          
-          const hoursDiff = (Date.now() - lastTime.getTime()) / (1000 * 60 * 60);
-          setIsPast24Hours(hoursDiff > 24);
-        } else {
-          setIsPast24Hours(true);
-          setLastIncomingTime(null);
-        }
       }
 
-      // 4. Mark as open/read automatically if unread
+      // 3. Mark as open/read automatically if unread
       if (conv.status === "unread") {
         await fetch(`/api/conversations/${conv.id}`, {
           method: "PUT",
@@ -1119,22 +1102,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                 </div>
               )}
 
-              {isPast24Hours ? (
-                <div className="bg-rose-950/20 border border-rose-900/40 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs text-rose-200 space-y-1.5">
-                  <div className="flex items-center gap-1.5 font-bold">
-                    <Lock className="h-4 w-4 shrink-0 text-rose-400" />
-                    WhatsApp Customer Service Window Expired
-                  </div>
-                  <p className="leading-relaxed text-rose-300">
-                    “Cannot send free-form reply. The 24-hour customer service window has expired. Template messages are not enabled in this version.”
-                  </p>
-                  {lastIncomingTime && (
-                    <div className="text-[10px] text-rose-500 font-mono mt-1">
-                      Last inbound message was: {lastIncomingTime.toLocaleString()}
-                    </div>
-                  )}
-                </div>
-              ) : (
                 <>
                 {attachment && (
                   <div className="mb-2 flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2">
@@ -1219,7 +1186,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   </button>
                 </form>
                 </>
-              )}
             </div>
           </>
         ) : (

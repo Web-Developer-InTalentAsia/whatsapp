@@ -1808,27 +1808,6 @@ app.post("/api/messages/send", authenticateJWT, async (req, res) => {
     if (!waNumber.phoneNumberId || !waNumber.accessToken) {
       return res.status(400).json({ error: "Phone Number ID or Access Token is missing in WhatsApp settings." });
     }
-    const [lastIncoming] = await db.select().from(schema_exports.messages).where(
-      (0, import_drizzle_orm2.and)(
-        (0, import_drizzle_orm2.eq)(schema_exports.messages.conversationId, convId),
-        (0, import_drizzle_orm2.eq)(schema_exports.messages.sender, "contact")
-      )
-    ).orderBy((0, import_drizzle_orm2.desc)(schema_exports.messages.id)).limit(1);
-    if (!lastIncoming) {
-      return res.status(400).json({
-        error: "Cannot send reply. No inbound message has been received from this contact yet."
-      });
-    }
-    const lastTime = new Date(lastIncoming.timestamp || "").getTime();
-    if (!Number.isFinite(lastTime)) {
-      return res.status(400).json({ error: "Last inbound message timestamp is invalid." });
-    }
-    const hoursDiff = (Date.now() - lastTime) / (1e3 * 60 * 60);
-    if (hoursDiff > 24) {
-      return res.status(400).json({
-        error: "Cannot send free-form reply. The 24-hour customer service window has expired. Template messages are not enabled in this version."
-      });
-    }
     let repliedMessage = null;
     if (replyToMessageId) {
       const [foundRepliedMessage] = await db.select().from(schema_exports.messages).where((0, import_drizzle_orm2.and)(
