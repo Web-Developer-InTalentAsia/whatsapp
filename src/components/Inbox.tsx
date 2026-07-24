@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   Search, MessageCircle, AlertCircle, Sparkles, Send, Clock, User, Check,
   Tags, Info, CheckCircle2, ChevronRight, CornerDownRight, ThumbsUp, ThumbsDown,
-  RefreshCw, Clipboard, Paperclip, CheckSquare, Plus, Lock, Calendar, Zap
+  RefreshCw, Clipboard, Paperclip, CheckSquare, Plus, Lock, Calendar, Zap,
+  MoreVertical, Reply, Forward, Pin, Star, X
 } from "lucide-react";
 import { Contact, Conversation, Message } from "../types.ts";
 
@@ -26,6 +27,9 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const [loadingList, setLoadingList] = useState(true);
   const [loadingChat, setLoadingChat] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null);
 
   // Quick Replies State
   const [quickReplies, setQuickReplies] = useState<any[]>([]);
@@ -116,6 +120,49 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
     return () => window.clearInterval(refreshInterval);
   }, [filter, assignedToMe, search, token, selectedConversation?.id]);
+
+  // Keep the open thread synchronized as webhook messages arrive. Previously
+  // only the conversation rail refreshed, so a quoted inbound reply could look
+  // like a detached message until the thread was reopened.
+  useEffect(() => {
+    if (!selectedConversation) return;
+
+    let stopped = false;
+    const refreshOpenThread = async () => {
+      try {
+        const response = await fetch(
+          `/api/conversations/${selectedConversation.id}/messages`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!response.ok || stopped) return;
+
+        const updatedMessages: Message[] = await response.json();
+        if (stopped) return;
+        setMessages(previous => {
+          const previousSignature = previous.map(message =>
+            `${message.id}:${message.isStarred}:${message.isPinned}:${message.replyToMessageId || ""}`
+          ).join("|");
+          const updatedSignature = updatedMessages.map(message =>
+            `${message.id}:${message.isStarred}:${message.isPinned}:${message.replyToMessageId || ""}`
+          ).join("|");
+          return previousSignature === updatedSignature ? previous : updatedMessages;
+        });
+      } catch (error) {
+        console.error("Unable to refresh the open conversation:", error);
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshOpenThread();
+      }
+    }, 3000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(intervalId);
+    };
+  }, [selectedConversation?.id, token]);
 
   // Handle selected conversation change
   const handleSelectConversation = async (conv: Conversation) => {
@@ -280,6 +327,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
           recipientPhone: contact.phoneNumber,
           messageText: text,
           replyType,
+          replyToMessageId: replyingTo?.id || null,
         })
       });
 
@@ -298,9 +346,19 @@ export default function Inbox({ token, currentUser }: InboxProps) {
         return;
       }
 
-      // Add to logs locally
-      setMessages(prev => [...prev, data]);
+      // Add to logs locally, including the quoted preview without waiting for
+      // the thread to be fetched again.
+      setMessages(prev => [...prev, {
+        ...data,
+        repliedMessage: replyingTo ? {
+          id: replyingTo.id,
+          senderName: replyingTo.senderName,
+          content: replyingTo.content,
+          deletedForEveryone: replyingTo.deletedForEveryone,
+        } : null,
+      }]);
       setReplyText("");
+      setReplyingTo(null);
       setSuggestions([]); // Clear suggestions upon reply
 
       // Reload conversation list
@@ -309,6 +367,70 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       console.error("Send error:", err);
     } finally {
       setSendingReply(false);
+    }
+  };
+
+  const updateMessageState = async (
+    message: Message,
+    updates: { isStarred?: boolean; isPinned?: boolean },
+  ) => {
+    const response = await fetch(`/api/messages/${message.id}/state`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(updates),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      alert(data.error || "Could not update the message.");
+      return;
+    }
+    setMessages(previous => previous.map(item =>
+      item.id === message.id ? { ...item, ...updates } : item
+    ));
+    setOpenActionMenuId(null);
+  };
+
+  const forwardMessage = async (target: Conversation) => {
+    if (!forwardingMessage) return;
+    try {
+      const detailsResponse = await fetch(`/api/conversations/${target.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const details = await detailsResponse.json();
+      if (!detailsResponse.ok || !details.contact) {
+        alert(details.error || "Could not load the target conversation.");
+        return;
+      }
+
+      const response = await fetch("/api/messages/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          conversationId: target.id,
+          whatsappNumberId: target.whatsappNumberId,
+          recipientPhone: details.contact.phoneNumber,
+          messageText: forwardingMessage.content,
+          replyType: "manual",
+          forwardedFromMessageId: forwardingMessage.id,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(data.error || "Could not forward the message.");
+        return;
+      }
+      setForwardingMessage(null);
+      setOpenActionMenuId(null);
+      alert("Message forwarded successfully.");
+    } catch (error) {
+      console.error("Forward error:", error);
+      alert("Could not forward the message.");
     }
   };
 
@@ -401,6 +523,42 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
   return (
     <div className="inbox-shell h-[calc(100vh-72px)] flex bg-[#06090c] overflow-hidden font-sans text-zinc-100">
+      {forwardingMessage && (
+        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-[#0c0c0e] shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+              <div>
+                <h3 className="font-bold text-zinc-100">Forward message</h3>
+                <p className="text-xs text-zinc-500 mt-1 truncate max-w-sm">
+                  {forwardingMessage.content}
+                </p>
+              </div>
+              <button onClick={() => setForwardingMessage(null)} className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="max-h-80 overflow-y-auto p-2">
+              {conversations.filter(item => item.id !== selectedConversation?.id).map(conversation => (
+                <button
+                  key={conversation.id}
+                  onClick={() => void forwardMessage(conversation)}
+                  className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-zinc-900 text-left transition"
+                >
+                  <div className="h-9 w-9 rounded-full bg-emerald-950 text-emerald-400 flex items-center justify-center font-bold">
+                    {(conversation as any).contactName?.charAt(0) || <User className="h-4 w-4" />}
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-zinc-200">
+                      {(conversation as any).contactName || (conversation as any).contactPhone || "WhatsApp contact"}
+                    </div>
+                    <div className="text-[10px] text-zinc-500">{(conversation as any).whatsappNumberName}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* 1. Left Panel: Conversation Threads */}
       <div className="w-80 md:w-96 flex flex-col border-r border-zinc-900 bg-[#0c0c0e]">
@@ -635,13 +793,80 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                               : "bg-emerald-600 text-white rounded-tr-none"
                           }`}
                         >
-                          <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.content}</p>
+                          <button
+                            type="button"
+                            onClick={() => setOpenActionMenuId(openActionMenuId === m.id ? null : m.id)}
+                            className={`absolute top-1 right-1 p-1 rounded-full opacity-0 group-hover:opacity-100 focus:opacity-100 transition ${
+                              isContact ? "hover:bg-zinc-800 text-zinc-400" : "hover:bg-emerald-700 text-emerald-100"
+                            }`}
+                            aria-label="Message actions"
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </button>
+
+                          {openActionMenuId === m.id && (
+                            <div className={`absolute z-50 top-7 w-48 rounded-xl border border-zinc-700 bg-[#111114] shadow-2xl py-1 text-zinc-200 ${
+                              isContact ? "left-2" : "right-2"
+                            }`}>
+                              <button onClick={() => { setReplyingTo(m); setOpenActionMenuId(null); }} className="w-full px-3 py-2 text-xs flex items-center gap-2 hover:bg-zinc-800">
+                                <Reply className="h-3.5 w-3.5" /> Reply
+                              </button>
+                              {!m.deletedForEveryone && (
+                                <button onClick={() => setForwardingMessage(m)} className="w-full px-3 py-2 text-xs flex items-center gap-2 hover:bg-zinc-800">
+                                  <Forward className="h-3.5 w-3.5" /> Forward
+                                </button>
+                              )}
+                              <button onClick={() => void updateMessageState(m, { isPinned: !m.isPinned })} className="w-full px-3 py-2 text-xs flex items-center gap-2 hover:bg-zinc-800">
+                                <Pin className="h-3.5 w-3.5" /> {m.isPinned ? "Unpin" : "Pin"}
+                              </button>
+                              <button onClick={() => void updateMessageState(m, { isStarred: !m.isStarred })} className="w-full px-3 py-2 text-xs flex items-center gap-2 hover:bg-zinc-800">
+                                <Star className="h-3.5 w-3.5" /> {m.isStarred ? "Unstar" : "Star"}
+                              </button>
+                            </div>
+                          )}
+
+                          {m.repliedMessage && (
+                            <div className={`mb-2 rounded-lg border-l-4 p-2 text-xs ${
+                              isContact ? "bg-black/25 border-emerald-500 text-zinc-400" : "bg-emerald-800/60 border-white/70 text-emerald-100"
+                            }`}>
+                              <div className="font-bold mb-0.5">{m.repliedMessage.senderName}</div>
+                              <div className="truncate">
+                                {m.repliedMessage.deletedForEveryone ? "This message was deleted" : m.repliedMessage.content}
+                              </div>
+                            </div>
+                          )}
+
+                          {m.hasUnmatchedReplyContext && !m.repliedMessage && (
+                            <div className={`mb-2 rounded-lg border-l-4 p-2 text-xs italic ${
+                              isContact ? "bg-black/25 border-amber-500 text-zinc-400" : "bg-emerald-800/60 border-amber-300 text-emerald-100"
+                            }`}>
+                              Reply to an older WhatsApp message whose original reference is unavailable
+                            </div>
+                          )}
+
+                          {m.forwardedFromMessageId && (
+                            <div className={`mb-1 text-[10px] italic flex items-center gap-1 ${isContact ? "text-zinc-500" : "text-emerald-200"}`}>
+                              <Forward className="h-3 w-3" /> Forwarded
+                            </div>
+                          )}
+
+                          {m.deletedForEveryone ? (
+                            <p className={`text-sm italic ${isContact ? "text-zinc-500" : "text-emerald-100"}`}>
+                              This message was deleted
+                            </p>
+                          ) : (
+                            <p className="text-sm leading-relaxed whitespace-pre-wrap pr-3">{m.content}</p>
+                          )}
                           
                           {/* Micro indicator of replies */}
                           <div className="flex items-center justify-between gap-4 mt-2">
-                            <span className={`text-[9px] ${isContact ? "text-zinc-500" : "text-emerald-200"} font-mono`}>
-                              {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              {m.isPinned && <Pin className={`h-3 w-3 ${isContact ? "text-zinc-500" : "text-emerald-200"}`} />}
+                              {m.isStarred && <Star className="h-3 w-3 fill-amber-400 text-amber-400" />}
+                              <span className={`text-[9px] ${isContact ? "text-zinc-500" : "text-emerald-200"} font-mono`}>
+                                {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
                             
                             {!isContact && m.replyType && m.replyType !== "none" && (
                               <span className="text-[9px] bg-emerald-750 text-emerald-100 font-bold px-2 py-0.5 rounded uppercase tracking-wider">
@@ -741,6 +966,20 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
             {/* Outgoing Message Entry (24 hours compliance checker) */}
             <div className="p-4 border-t border-zinc-900 bg-[#0c0c0e] relative">
+              {replyingTo && (
+                <div className="mb-2 flex items-stretch rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800">
+                  <div className="w-1 bg-emerald-500" />
+                  <div className="flex-1 px-3 py-2 min-w-0">
+                    <div className="text-[11px] font-bold text-emerald-400">{replyingTo.senderName}</div>
+                    <div className="text-xs text-zinc-400 truncate">
+                      {replyingTo.deletedForEveryone ? "This message was deleted" : replyingTo.content}
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => setReplyingTo(null)} className="px-3 text-zinc-500 hover:text-zinc-200">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
               {/* Quick Reply Autocomplete or Toggle Dropdown */}
               {(showQuickReplyMenu || showQuickRepliesButtonMenu) && (
                 <div className="absolute bottom-full left-4 right-4 mb-2 bg-[#09090b] border border-zinc-850 rounded-xl shadow-2xl z-50 overflow-hidden max-h-48 flex flex-col divide-y divide-zinc-800">

@@ -67,6 +67,21 @@ export interface Message {
   status: 'sent' | 'received' | 'failed';
   timestamp: string;
   agentId?: number | null;
+  replyToMessageId?: number | null;
+  forwardedFromMessageId?: number | null;
+  deletedForEveryone?: boolean;
+  isStarred?: boolean;
+  isPinned?: boolean;
+  deletedForMe?: boolean;
+  metaMessageId?: string | null;
+  replyContextMetaMessageId?: string | null;
+  hasUnmatchedReplyContext?: boolean;
+  repliedMessage?: {
+    id: number;
+    senderName: string;
+    content: string;
+    deletedForEveryone?: boolean;
+  } | null;
 }
 
 export interface WorkflowStep {
@@ -133,4 +148,3 @@ export interface QuickReply {
   message: string;
   createdAt?: string;
 }
-

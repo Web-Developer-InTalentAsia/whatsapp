@@ -216,6 +216,7 @@ async function sendWhatsAppTextMessage(params: {
   accessToken: string;
   to: string;
   body: string;
+  replyToMetaMessageId?: string | null;
 }) {
   const phoneNumberId = String(params.phoneNumberId || "").trim();
   const accessToken = String(params.accessToken || "").trim();
@@ -246,6 +247,9 @@ async function sendWhatsAppTextMessage(params: {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to,
+      ...(params.replyToMetaMessageId
+        ? { context: { message_id: params.replyToMetaMessageId } }
+        : {}),
       type: "text",
       text: {
         preview_url: false,
@@ -544,6 +548,29 @@ async function ensureSeedData() {
     console.error("Error checking or seeding database:", error);
   }
   */
+}
+
+async function ensureMessageActionSchema() {
+  await db.execute(sql`
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS reply_to_message_id integer,
+      ADD COLUMN IF NOT EXISTS forwarded_from_message_id integer,
+      ADD COLUMN IF NOT EXISTS deleted_for_everyone boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS meta_message_id text,
+      ADD COLUMN IF NOT EXISTS reply_context_meta_message_id text
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS message_user_states (
+      id serial PRIMARY KEY,
+      message_id integer NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      is_starred boolean NOT NULL DEFAULT false,
+      is_pinned boolean NOT NULL DEFAULT false,
+      deleted_for_me boolean NOT NULL DEFAULT false,
+      updated_at timestamp DEFAULT now(),
+      UNIQUE (message_id, user_id)
+    )
+  `);
 }
 
 // Database initialization is awaited inside startServer() before the app starts listening.
@@ -1583,11 +1610,80 @@ app.put("/api/contacts/:id", authenticateJWT, async (req: any, res) => {
 });
 
 // Fetch messages for a conversation
-app.get("/api/conversations/:id/messages", authenticateJWT, async (req, res) => {
+app.get("/api/conversations/:id/messages", authenticateJWT, async (req: any, res) => {
   const { id } = req.params;
   try {
     const msgs = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, parseInt(id))).orderBy(asc(schema.messages.id));
-    res.json(msgs);
+    const states = await db.select()
+      .from(schema.messageUserStates)
+      .where(eq(schema.messageUserStates.userId, req.user.id));
+    const stateByMessageId = new Map(states.map(state => [state.messageId, state]));
+    const messageById = new Map(msgs.map(message => [message.id, message]));
+
+    res.json(msgs
+      .filter(message => !stateByMessageId.get(message.id)?.deletedForMe)
+      .map(message => {
+        const state = stateByMessageId.get(message.id);
+        const repliedMessage = message.replyToMessageId
+          ? messageById.get(message.replyToMessageId)
+          : null;
+        return {
+          ...message,
+          content: message.deletedForEveryone ? "" : message.content,
+          isStarred: state?.isStarred || false,
+          isPinned: state?.isPinned || false,
+          deletedForMe: false,
+          repliedMessage: repliedMessage ? {
+            id: repliedMessage.id,
+            senderName: repliedMessage.senderName,
+            content: repliedMessage.deletedForEveryone ? "" : repliedMessage.content,
+            deletedForEveryone: repliedMessage.deletedForEveryone,
+          } : null,
+          hasUnmatchedReplyContext:
+            Boolean(message.replyContextMetaMessageId) && !repliedMessage,
+        };
+      }));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch("/api/messages/:id/state", authenticateJWT, async (req: any, res) => {
+  const messageId = Number(req.params.id);
+  const { isStarred, isPinned } = req.body;
+  if (!Number.isInteger(messageId)) {
+    return res.status(400).json({ error: "Invalid message ID." });
+  }
+  if (isStarred === undefined && isPinned === undefined) {
+    return res.status(400).json({ error: "No message state supplied." });
+  }
+
+  try {
+    const [message] = await db.select().from(schema.messages)
+      .where(eq(schema.messages.id, messageId)).limit(1);
+    if (!message) return res.status(404).json({ error: "Message not found." });
+
+    const [existing] = await db.select().from(schema.messageUserStates)
+      .where(and(
+        eq(schema.messageUserStates.messageId, messageId),
+        eq(schema.messageUserStates.userId, req.user.id),
+      )).limit(1);
+
+    const values = {
+      isStarred: isStarred ?? existing?.isStarred ?? false,
+      isPinned: isPinned ?? existing?.isPinned ?? false,
+      updatedAt: new Date(),
+    };
+
+    const [state] = existing
+      ? await db.update(schema.messageUserStates).set(values)
+          .where(eq(schema.messageUserStates.id, existing.id)).returning()
+      : await db.insert(schema.messageUserStates).values({
+          messageId,
+          userId: req.user.id,
+          ...values,
+        }).returning();
+    res.json(state);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1907,7 +2003,7 @@ async function runWorkflowStep(convId: number, numId: number, incomingText: stri
 
 // --- SEND MESSAGE API WITH REAL META WHATSAPP CLOUD API ---
 app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
-  const { conversationId, whatsappNumberId, recipientPhone, messageText, replyType } = req.body;
+  const { conversationId, whatsappNumberId, recipientPhone, messageText, replyType, replyToMessageId, forwardedFromMessageId } = req.body;
 
   if (!conversationId || !whatsappNumberId || !messageText) {
     return res.status(400).json({ error: "Missing required payload fields." });
@@ -2005,14 +2101,67 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
       });
     }
 
+    let repliedMessage: typeof schema.messages.$inferSelect | null = null;
+    if (replyToMessageId) {
+      const [foundRepliedMessage] = await db.select().from(schema.messages)
+        .where(and(
+          eq(schema.messages.id, Number(replyToMessageId)),
+          eq(schema.messages.conversationId, convId),
+        )).limit(1);
+      repliedMessage = foundRepliedMessage || null;
+      if (!repliedMessage) {
+        return res.status(400).json({ error: "The replied-to message was not found in this conversation." });
+      }
+    }
+
+    const quotedFallback = repliedMessage && !repliedMessage.metaMessageId
+      ? `↪ Replying to ${repliedMessage.senderName}: “${repliedMessage.content.slice(0, 240)}${repliedMessage.content.length > 240 ? "…" : ""}”\n\n${messageText}`
+      : messageText;
+
     // 5. Send the real WhatsApp message through Meta Cloud API first
     try {
-      await sendWhatsAppTextMessage({
+      const metaResult = await sendWhatsAppTextMessage({
         phoneNumberId: waNumber.phoneNumberId,
         accessToken: waNumber.accessToken,
         to: destinationPhone,
-        body: messageText,
+        body: quotedFallback,
+        replyToMetaMessageId: repliedMessage?.metaMessageId || null,
       });
+      const sentMetaMessageId = String(metaResult?.messages?.[0]?.id || "").trim() || null;
+
+      // 6. Save outgoing message only after successful Meta send
+      const [newMsg] = await db
+        .insert(schema.messages)
+        .values({
+          conversationId: convId,
+          sender: "agent",
+          senderName: req.user.name,
+          content: messageText,
+          messageType: "text",
+          replyType: replyType || "manual",
+          status: "sent",
+          agentId: req.user.id,
+          timestamp: new Date(),
+          replyToMessageId: replyToMessageId || null,
+          forwardedFromMessageId: forwardedFromMessageId || null,
+          metaMessageId: sentMetaMessageId,
+        })
+        .returning();
+
+      // 7. Update conversation
+      await db
+        .update(schema.conversations)
+        .set({ lastMessageAt: new Date(), status: "open" })
+        .where(eq(schema.conversations.id, convId));
+
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Message Sent",
+        `Sent real WhatsApp reply to ${destinationPhone} (Conv ID: ${convId}).`
+      );
+
+      return res.json(newMsg);
     } catch (metaError: any) {
       await db.insert(schema.messages).values({
         conversationId: convId,
@@ -2024,6 +2173,8 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
         status: "failed",
         agentId: req.user.id,
         timestamp: new Date(),
+        replyToMessageId: replyToMessageId || null,
+        forwardedFromMessageId: forwardedFromMessageId || null,
       });
 
       await db
@@ -2040,37 +2191,6 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
 
       return res.status(502).json({ error: `WhatsApp send failed: ${metaError.message}` });
     }
-
-    // 6. Save outgoing message only after successful Meta send
-    const [newMsg] = await db
-      .insert(schema.messages)
-      .values({
-        conversationId: convId,
-        sender: "agent",
-        senderName: req.user.name,
-        content: messageText,
-        messageType: "text",
-        replyType: replyType || "manual",
-        status: "sent",
-        agentId: req.user.id,
-        timestamp: new Date(),
-      })
-      .returning();
-
-    // 7. Update conversation
-    await db
-      .update(schema.conversations)
-      .set({ lastMessageAt: new Date(), status: "open" })
-      .where(eq(schema.conversations.id, convId));
-
-    await auditLog(
-      req.user.id,
-      req.user.email,
-      "Message Sent",
-      `Sent real WhatsApp reply to ${destinationPhone} (Conv ID: ${convId}).`
-    );
-
-    res.json(newMsg);
   } catch (error: any) {
     console.error("Send message error:", error);
     res.status(500).json({ error: error.message });
@@ -2221,6 +2341,16 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
         .where(eq(schema.conversations.id, conv.id));
     }
 
+    let replyToMessageId: number | null = null;
+    const repliedMetaMessageId = String(msg.context?.id || "").trim();
+    if (repliedMetaMessageId) {
+      const [repliedMessage] = await db.select({ id: schema.messages.id })
+        .from(schema.messages)
+        .where(eq(schema.messages.metaMessageId, repliedMetaMessageId))
+        .limit(1);
+      replyToMessageId = repliedMessage?.id || null;
+    }
+
     // 3. Save Message
     const [newMsg] = await db.insert(schema.messages).values({
       conversationId: conv.id,
@@ -2230,6 +2360,9 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
       messageType: messageType === "document" ? "document" : (text.toLowerCase().endsWith(".pdf") || text.toLowerCase().includes("resume") || text.toLowerCase().includes("cv") ? "cv" : "text"),
       status: "received",
       timestamp: receivedAt,
+      metaMessageId: String(msg.id || "").trim() || null,
+      replyToMessageId,
+      replyContextMetaMessageId: repliedMetaMessageId || null,
     }).returning();
 
     // 4. Trigger Workflow Engine Check
@@ -2403,6 +2536,7 @@ async function startServer() {
   try {
     // Prevent a first-start race where login is attempted before seed checks finish.
     await ensureSeedData();
+    await ensureMessageActionSchema();
 
     // Unknown API requests must return JSON instead of the React index.html page.
     app.use("/api", (req, res) => {

@@ -85,6 +85,21 @@ export const messages = pgTable('messages', {
   status: text('status').notNull().default('received'), // 'sent' | 'received' | 'failed'
   timestamp: timestamp('timestamp').defaultNow(),
   agentId: integer('agent_id').references(() => users.id, { onDelete: 'set null' }),
+  replyToMessageId: integer('reply_to_message_id'),
+  forwardedFromMessageId: integer('forwarded_from_message_id'),
+  deletedForEveryone: boolean('deleted_for_everyone').notNull().default(false),
+  metaMessageId: text('meta_message_id'),
+  replyContextMetaMessageId: text('reply_context_meta_message_id'),
+});
+
+export const messageUserStates = pgTable('message_user_states', {
+  id: serial('id').primaryKey(),
+  messageId: integer('message_id').references(() => messages.id, { onDelete: 'cascade' }).notNull(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  isStarred: boolean('is_starred').notNull().default(false),
+  isPinned: boolean('is_pinned').notNull().default(false),
+  deletedForMe: boolean('deleted_for_me').notNull().default(false),
+  updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 // 7. Workflows Table

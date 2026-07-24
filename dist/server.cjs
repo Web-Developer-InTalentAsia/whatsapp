@@ -53,6 +53,7 @@ __export(schema_exports, {
   contactsRelations: () => contactsRelations,
   conversations: () => conversations,
   conversationsRelations: () => conversationsRelations,
+  messageUserStates: () => messageUserStates,
   messages: () => messages,
   messagesRelations: () => messagesRelations,
   quickReplies: () => quickReplies,
@@ -153,7 +154,21 @@ var messages = (0, import_pg_core.pgTable)("messages", {
   status: (0, import_pg_core.text)("status").notNull().default("received"),
   // 'sent' | 'received' | 'failed'
   timestamp: (0, import_pg_core.timestamp)("timestamp").defaultNow(),
-  agentId: (0, import_pg_core.integer)("agent_id").references(() => users.id, { onDelete: "set null" })
+  agentId: (0, import_pg_core.integer)("agent_id").references(() => users.id, { onDelete: "set null" }),
+  replyToMessageId: (0, import_pg_core.integer)("reply_to_message_id"),
+  forwardedFromMessageId: (0, import_pg_core.integer)("forwarded_from_message_id"),
+  deletedForEveryone: (0, import_pg_core.boolean)("deleted_for_everyone").notNull().default(false),
+  metaMessageId: (0, import_pg_core.text)("meta_message_id"),
+  replyContextMetaMessageId: (0, import_pg_core.text)("reply_context_meta_message_id")
+});
+var messageUserStates = (0, import_pg_core.pgTable)("message_user_states", {
+  id: (0, import_pg_core.serial)("id").primaryKey(),
+  messageId: (0, import_pg_core.integer)("message_id").references(() => messages.id, { onDelete: "cascade" }).notNull(),
+  userId: (0, import_pg_core.integer)("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+  isStarred: (0, import_pg_core.boolean)("is_starred").notNull().default(false),
+  isPinned: (0, import_pg_core.boolean)("is_pinned").notNull().default(false),
+  deletedForMe: (0, import_pg_core.boolean)("deleted_for_me").notNull().default(false),
+  updatedAt: (0, import_pg_core.timestamp)("updated_at").defaultNow()
 });
 var workflows = (0, import_pg_core.pgTable)("workflows", {
   id: (0, import_pg_core.serial)("id").primaryKey(),
@@ -507,6 +522,7 @@ async function sendWhatsAppTextMessage(params) {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to,
+      ...params.replyToMetaMessageId ? { context: { message_id: params.replyToMetaMessageId } } : {},
       type: "text",
       text: {
         preview_url: false,
@@ -522,6 +538,28 @@ async function sendWhatsAppTextMessage(params) {
 }
 async function ensureSeedData() {
   return;
+}
+async function ensureMessageActionSchema() {
+  await db.execute(import_drizzle_orm2.sql`
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS reply_to_message_id integer,
+      ADD COLUMN IF NOT EXISTS forwarded_from_message_id integer,
+      ADD COLUMN IF NOT EXISTS deleted_for_everyone boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS meta_message_id text,
+      ADD COLUMN IF NOT EXISTS reply_context_meta_message_id text
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE TABLE IF NOT EXISTS message_user_states (
+      id serial PRIMARY KEY,
+      message_id integer NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      is_starred boolean NOT NULL DEFAULT false,
+      is_pinned boolean NOT NULL DEFAULT false,
+      deleted_for_me boolean NOT NULL DEFAULT false,
+      updated_at timestamp DEFAULT now(),
+      UNIQUE (message_id, user_id)
+    )
+  `);
 }
 var authenticateJWT = async (req, res, next) => {
   const rawAuthorization = req.headers.authorization || req.headers["x-forwarded-authorization"] || "";
@@ -1323,7 +1361,58 @@ app.get("/api/conversations/:id/messages", authenticateJWT, async (req, res) => 
   const { id } = req.params;
   try {
     const msgs = await db.select().from(schema_exports.messages).where((0, import_drizzle_orm2.eq)(schema_exports.messages.conversationId, parseInt(id))).orderBy((0, import_drizzle_orm2.asc)(schema_exports.messages.id));
-    res.json(msgs);
+    const states = await db.select().from(schema_exports.messageUserStates).where((0, import_drizzle_orm2.eq)(schema_exports.messageUserStates.userId, req.user.id));
+    const stateByMessageId = new Map(states.map((state) => [state.messageId, state]));
+    const messageById = new Map(msgs.map((message) => [message.id, message]));
+    res.json(msgs.filter((message) => !stateByMessageId.get(message.id)?.deletedForMe).map((message) => {
+      const state = stateByMessageId.get(message.id);
+      const repliedMessage = message.replyToMessageId ? messageById.get(message.replyToMessageId) : null;
+      return {
+        ...message,
+        content: message.deletedForEveryone ? "" : message.content,
+        isStarred: state?.isStarred || false,
+        isPinned: state?.isPinned || false,
+        deletedForMe: false,
+        repliedMessage: repliedMessage ? {
+          id: repliedMessage.id,
+          senderName: repliedMessage.senderName,
+          content: repliedMessage.deletedForEveryone ? "" : repliedMessage.content,
+          deletedForEveryone: repliedMessage.deletedForEveryone
+        } : null,
+        hasUnmatchedReplyContext: Boolean(message.replyContextMetaMessageId) && !repliedMessage
+      };
+    }));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+app.patch("/api/messages/:id/state", authenticateJWT, async (req, res) => {
+  const messageId = Number(req.params.id);
+  const { isStarred, isPinned } = req.body;
+  if (!Number.isInteger(messageId)) {
+    return res.status(400).json({ error: "Invalid message ID." });
+  }
+  if (isStarred === void 0 && isPinned === void 0) {
+    return res.status(400).json({ error: "No message state supplied." });
+  }
+  try {
+    const [message] = await db.select().from(schema_exports.messages).where((0, import_drizzle_orm2.eq)(schema_exports.messages.id, messageId)).limit(1);
+    if (!message) return res.status(404).json({ error: "Message not found." });
+    const [existing] = await db.select().from(schema_exports.messageUserStates).where((0, import_drizzle_orm2.and)(
+      (0, import_drizzle_orm2.eq)(schema_exports.messageUserStates.messageId, messageId),
+      (0, import_drizzle_orm2.eq)(schema_exports.messageUserStates.userId, req.user.id)
+    )).limit(1);
+    const values = {
+      isStarred: isStarred ?? existing?.isStarred ?? false,
+      isPinned: isPinned ?? existing?.isPinned ?? false,
+      updatedAt: /* @__PURE__ */ new Date()
+    };
+    const [state] = existing ? await db.update(schema_exports.messageUserStates).set(values).where((0, import_drizzle_orm2.eq)(schema_exports.messageUserStates.id, existing.id)).returning() : await db.insert(schema_exports.messageUserStates).values({
+      messageId,
+      userId: req.user.id,
+      ...values
+    }).returning();
+    res.json(state);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1560,7 +1649,7 @@ ${welcomeStep.questionText}`,
   }
 }
 app.post("/api/messages/send", authenticateJWT, async (req, res) => {
-  const { conversationId, whatsappNumberId, recipientPhone, messageText, replyType } = req.body;
+  const { conversationId, whatsappNumberId, recipientPhone, messageText, replyType, replyToMessageId, forwardedFromMessageId } = req.body;
   if (!conversationId || !whatsappNumberId || !messageText) {
     return res.status(400).json({ error: "Missing required payload fields." });
   }
@@ -1618,13 +1707,51 @@ app.post("/api/messages/send", authenticateJWT, async (req, res) => {
         error: "Cannot send free-form reply. The 24-hour customer service window has expired. Template messages are not enabled in this version."
       });
     }
+    let repliedMessage = null;
+    if (replyToMessageId) {
+      const [foundRepliedMessage] = await db.select().from(schema_exports.messages).where((0, import_drizzle_orm2.and)(
+        (0, import_drizzle_orm2.eq)(schema_exports.messages.id, Number(replyToMessageId)),
+        (0, import_drizzle_orm2.eq)(schema_exports.messages.conversationId, convId)
+      )).limit(1);
+      repliedMessage = foundRepliedMessage || null;
+      if (!repliedMessage) {
+        return res.status(400).json({ error: "The replied-to message was not found in this conversation." });
+      }
+    }
+    const quotedFallback = repliedMessage && !repliedMessage.metaMessageId ? `\u21AA Replying to ${repliedMessage.senderName}: \u201C${repliedMessage.content.slice(0, 240)}${repliedMessage.content.length > 240 ? "\u2026" : ""}\u201D
+
+${messageText}` : messageText;
     try {
-      await sendWhatsAppTextMessage({
+      const metaResult = await sendWhatsAppTextMessage({
         phoneNumberId: waNumber.phoneNumberId,
         accessToken: waNumber.accessToken,
         to: destinationPhone,
-        body: messageText
+        body: quotedFallback,
+        replyToMetaMessageId: repliedMessage?.metaMessageId || null
       });
+      const sentMetaMessageId = String(metaResult?.messages?.[0]?.id || "").trim() || null;
+      const [newMsg] = await db.insert(schema_exports.messages).values({
+        conversationId: convId,
+        sender: "agent",
+        senderName: req.user.name,
+        content: messageText,
+        messageType: "text",
+        replyType: replyType || "manual",
+        status: "sent",
+        agentId: req.user.id,
+        timestamp: /* @__PURE__ */ new Date(),
+        replyToMessageId: replyToMessageId || null,
+        forwardedFromMessageId: forwardedFromMessageId || null,
+        metaMessageId: sentMetaMessageId
+      }).returning();
+      await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Message Sent",
+        `Sent real WhatsApp reply to ${destinationPhone} (Conv ID: ${convId}).`
+      );
+      return res.json(newMsg);
     } catch (metaError) {
       await db.insert(schema_exports.messages).values({
         conversationId: convId,
@@ -1635,7 +1762,9 @@ app.post("/api/messages/send", authenticateJWT, async (req, res) => {
         replyType: replyType || "manual",
         status: "failed",
         agentId: req.user.id,
-        timestamp: /* @__PURE__ */ new Date()
+        timestamp: /* @__PURE__ */ new Date(),
+        replyToMessageId: replyToMessageId || null,
+        forwardedFromMessageId: forwardedFromMessageId || null
       });
       await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
       await auditLog(
@@ -1646,25 +1775,6 @@ app.post("/api/messages/send", authenticateJWT, async (req, res) => {
       );
       return res.status(502).json({ error: `WhatsApp send failed: ${metaError.message}` });
     }
-    const [newMsg] = await db.insert(schema_exports.messages).values({
-      conversationId: convId,
-      sender: "agent",
-      senderName: req.user.name,
-      content: messageText,
-      messageType: "text",
-      replyType: replyType || "manual",
-      status: "sent",
-      agentId: req.user.id,
-      timestamp: /* @__PURE__ */ new Date()
-    }).returning();
-    await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
-    await auditLog(
-      req.user.id,
-      req.user.email,
-      "Message Sent",
-      `Sent real WhatsApp reply to ${destinationPhone} (Conv ID: ${convId}).`
-    );
-    res.json(newMsg);
   } catch (error) {
     console.error("Send message error:", error);
     res.status(500).json({ error: error.message });
@@ -1767,6 +1877,12 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
     } else {
       await db.update(schema_exports.conversations).set({ status: "unread", lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
     }
+    let replyToMessageId = null;
+    const repliedMetaMessageId = String(msg.context?.id || "").trim();
+    if (repliedMetaMessageId) {
+      const [repliedMessage] = await db.select({ id: schema_exports.messages.id }).from(schema_exports.messages).where((0, import_drizzle_orm2.eq)(schema_exports.messages.metaMessageId, repliedMetaMessageId)).limit(1);
+      replyToMessageId = repliedMessage?.id || null;
+    }
     const [newMsg] = await db.insert(schema_exports.messages).values({
       conversationId: conv.id,
       sender: "contact",
@@ -1774,7 +1890,10 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
       content: text2,
       messageType: messageType === "document" ? "document" : text2.toLowerCase().endsWith(".pdf") || text2.toLowerCase().includes("resume") || text2.toLowerCase().includes("cv") ? "cv" : "text",
       status: "received",
-      timestamp: receivedAt
+      timestamp: receivedAt,
+      metaMessageId: String(msg.id || "").trim() || null,
+      replyToMessageId,
+      replyContextMetaMessageId: repliedMetaMessageId || null
     }).returning();
     const isWfHandled = await runWorkflowStep(conv.id, numId, text2, contact.id);
     if (!isWfHandled) {
@@ -1907,6 +2026,7 @@ app.get("/api/dashboard", authenticateJWT, async (req, res) => {
 async function startServer() {
   try {
     await ensureSeedData();
+    await ensureMessageActionSchema();
     app.use("/api", (req, res) => {
       return res.status(404).json({
         error: `API endpoint not found: ${req.method} ${req.originalUrl}`
