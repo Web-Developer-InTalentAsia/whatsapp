@@ -6,6 +6,8 @@ import React, {
 
 import {
   BarChart3,
+  Bell,
+  BellOff,
   BookOpen,
   LayoutDashboard,
   LogOut,
@@ -25,6 +27,7 @@ import AuditLogs from "./components/AuditLogs.tsx";
 import SetupGuide from "./components/SetupGuide.tsx";
 import PrivacyPolicy from "./components/PrivacyPolicy.tsx";
 import DataDeletion from "./components/DataDeletion.tsx";
+import type { Conversation } from "./types.ts";
 
 const TOKEN_STORAGE_KEY = "intalent_token";
 
@@ -91,6 +94,32 @@ export default function App() {
 
   const [mobileMenuOpen, setMobileMenuOpen] =
     useState<boolean>(false);
+
+  const [notificationPermission, setNotificationPermission] =
+    useState<NotificationPermission | "unsupported">(() => {
+      if (typeof window === "undefined" || !("Notification" in window)) {
+        return "unsupported";
+      }
+
+      return Notification.permission;
+    });
+
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+  const knownConversationTimes = React.useRef<Map<number, number> | null>(null);
+
+  const enableNotifications = useCallback(async (): Promise<void> => {
+    if (!("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      return;
+    }
+
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+    } catch (error) {
+      console.error("Unable to request notification permission:", error);
+    }
+  }, []);
 
   const handleLogout = useCallback((): void => {
     try {
@@ -252,6 +281,114 @@ export default function App() {
       controller.abort();
     };
   }, [token, currentUser, loadProfile]);
+
+  useEffect(() => {
+    if (!token || !currentUser) {
+      knownConversationTimes.current = null;
+      setUnreadCount(0);
+      return;
+    }
+
+    let stopped = false;
+
+    const checkForNewMessages = async (): Promise<void> => {
+      try {
+        const response = await fetch("/api/conversations?status=all", {
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const conversations = (await response.json()) as Array<
+          Conversation & {
+            contactName?: string | null;
+            contactPhone?: string;
+            whatsappNumberName?: string;
+          }
+        >;
+
+        if (stopped) {
+          return;
+        }
+
+        const unread = conversations.filter(
+          (conversation) => conversation.status === "unread",
+        );
+        setUnreadCount(unread.length);
+
+        const latestTimes = new Map<number, number>(
+          conversations.map((conversation) => [
+            conversation.id,
+            new Date(conversation.lastMessageAt).getTime(),
+          ]),
+        );
+
+        // The first request establishes a baseline so old unread chats do not
+        // create a burst of notifications immediately after login.
+        if (knownConversationTimes.current) {
+          const newInboundConversations = unread.filter((conversation) => {
+            const timestamp = latestTimes.get(conversation.id) ?? 0;
+            const previousTimestamp =
+              knownConversationTimes.current?.get(conversation.id);
+
+            return (
+              previousTimestamp !== undefined &&
+              timestamp > previousTimestamp
+            ) || previousTimestamp === undefined;
+          });
+
+          if (
+            newInboundConversations.length > 0 &&
+            "Notification" in window &&
+            Notification.permission === "granted"
+          ) {
+            newInboundConversations.forEach((conversation) => {
+              const sender =
+                conversation.contactName ||
+                conversation.contactPhone ||
+                "New contact";
+              const notification = new Notification(
+                `New WhatsApp message from ${sender}`,
+                {
+                  body: conversation.whatsappNumberName
+                    ? `Received on ${conversation.whatsappNumberName}`
+                    : "Open InTalent Inbox to view the message.",
+                  icon: "/favicon.ico",
+                  tag: `conversation-${conversation.id}`,
+                },
+              );
+
+              notification.onclick = () => {
+                window.focus();
+                setActivePage("inbox");
+                notification.close();
+              };
+            });
+          }
+        }
+
+        knownConversationTimes.current = latestTimes;
+      } catch (error) {
+        console.error("Unable to check for new WhatsApp messages:", error);
+      }
+    };
+
+    void checkForNewMessages();
+    const intervalId = window.setInterval(() => {
+      void checkForNewMessages();
+    }, 5000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(intervalId);
+    };
+  }, [token, currentUser]);
 
   const handleLoginSuccess = (
     authToken: string,
@@ -461,6 +598,40 @@ export default function App() {
 
             {/* Desktop user information */}
             <div className="hidden xl:flex items-center gap-4">
+              <button
+                type="button"
+                onClick={() => {
+                  if (notificationPermission === "default") {
+                    void enableNotifications();
+                  } else {
+                    setActivePage("inbox");
+                  }
+                }}
+                className="relative p-2 text-zinc-400 hover:text-emerald-300 hover:bg-emerald-950/30 rounded-xl transition cursor-pointer"
+                title={
+                  notificationPermission === "granted"
+                    ? "Message notifications are enabled"
+                    : notificationPermission === "denied"
+                      ? "Notifications are blocked in your browser settings"
+                      : notificationPermission === "unsupported"
+                        ? "This browser does not support notifications"
+                        : "Enable message notifications"
+                }
+                aria-label="Message notifications"
+              >
+                {notificationPermission === "denied" ||
+                notificationPermission === "unsupported" ? (
+                  <BellOff className="h-5 w-5" />
+                ) : (
+                  <Bell className="h-5 w-5" />
+                )}
+                {unreadCount > 0 && (
+                  <span className="absolute -right-1 -top-1 min-w-4 h-4 px-1 rounded-full bg-rose-500 text-[9px] font-bold text-white flex items-center justify-center">
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
               <div className="text-right">
                 <span className="font-semibold text-zinc-300 text-xs block">
                   {currentUser.name}
@@ -484,6 +655,31 @@ export default function App() {
 
             {/* Mobile menu button */}
             <div className="flex xl:hidden items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (notificationPermission === "default") {
+                    void enableNotifications();
+                  } else {
+                    setActivePage("inbox");
+                  }
+                }}
+                className="relative p-2 rounded-xl text-zinc-400 hover:bg-zinc-900"
+                aria-label="Message notifications"
+              >
+                {notificationPermission === "denied" ||
+                notificationPermission === "unsupported" ? (
+                  <BellOff className="h-5 w-5" />
+                ) : (
+                  <Bell className="h-5 w-5" />
+                )}
+                {unreadCount > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 min-w-4 h-4 px-1 rounded-full bg-rose-500 text-[9px] font-bold text-white flex items-center justify-center">
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
               <button
                 type="button"
                 onClick={() =>
