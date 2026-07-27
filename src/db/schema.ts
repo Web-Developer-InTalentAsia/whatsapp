@@ -59,6 +59,14 @@ export const contacts = pgTable('contacts', {
   location: text('location').notNull().default(''),
   experience: text('experience').notNull().default(''),
   clientCandidateType: text('client_candidate_type').notNull().default('candidate'), // 'candidate' | 'client'
+  companyName: text('company_name').notNull().default(''),
+  companyWebsite: text('company_website').notNull().default(''),
+  industry: text('industry').notNull().default(''),
+  contactDesignation: text('contact_designation').notNull().default(''),
+  hiringRequirements: text('hiring_requirements').notNull().default(''),
+  vacancyCount: text('vacancy_count').notNull().default(''),
+  hiringBudget: text('hiring_budget').notNull().default(''),
+  companyLocation: text('company_location').notNull().default(''),
   createdAt: timestamp('created_at').defaultNow(),
 });
 

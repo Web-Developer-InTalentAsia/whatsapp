@@ -643,6 +643,17 @@ async function ensureSeedData() {
 
 async function ensureMessageActionSchema() {
   await db.execute(sql`
+    ALTER TABLE contacts
+      ADD COLUMN IF NOT EXISTS company_name text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS company_website text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS industry text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS contact_designation text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS hiring_requirements text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS vacancy_count text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS hiring_budget text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS company_location text NOT NULL DEFAULT ''
+  `);
+  await db.execute(sql`
     ALTER TABLE messages
       ADD COLUMN IF NOT EXISTS reply_to_message_id integer,
       ADD COLUMN IF NOT EXISTS forwarded_from_message_id integer,
@@ -1676,7 +1687,12 @@ app.put("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
 // Update contact profile fields
 app.put("/api/contacts/:id", authenticateJWT, async (req: any, res) => {
   const { id } = req.params;
-  const { name, tags, notes, cvField, linkedinField, interestedJobRole, expectedSalary, location, experience, clientCandidateType } = req.body;
+  const {
+    name, tags, notes, cvField, linkedinField, interestedJobRole,
+    expectedSalary, location, experience, clientCandidateType,
+    companyName, companyWebsite, industry, contactDesignation,
+    hiringRequirements, vacancyCount, hiringBudget, companyLocation,
+  } = req.body;
   try {
     const updates: any = {};
     if (name !== undefined) updates.name = name;
@@ -1689,6 +1705,14 @@ app.put("/api/contacts/:id", authenticateJWT, async (req: any, res) => {
     if (location !== undefined) updates.location = location;
     if (experience !== undefined) updates.experience = experience;
     if (clientCandidateType !== undefined) updates.clientCandidateType = clientCandidateType;
+    if (companyName !== undefined) updates.companyName = companyName;
+    if (companyWebsite !== undefined) updates.companyWebsite = companyWebsite;
+    if (industry !== undefined) updates.industry = industry;
+    if (contactDesignation !== undefined) updates.contactDesignation = contactDesignation;
+    if (hiringRequirements !== undefined) updates.hiringRequirements = hiringRequirements;
+    if (vacancyCount !== undefined) updates.vacancyCount = vacancyCount;
+    if (hiringBudget !== undefined) updates.hiringBudget = hiringBudget;
+    if (companyLocation !== undefined) updates.companyLocation = companyLocation;
 
     const [updated] = await db.update(schema.contacts)
       .set(updates)

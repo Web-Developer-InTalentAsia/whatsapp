@@ -1262,11 +1262,13 @@ export default function Inbox({ token, currentUser }: InboxProps) {
             {/* Candidate Info Fields */}
             <div className="space-y-4">
               <h5 className="text-xs font-bold text-zinc-400 uppercase tracking-wider border-b border-zinc-900 pb-2">
-                Recruitment Details
+                {contact.clientCandidateType === "client" ? "Client & Hiring Details" : "Candidate Details"}
               </h5>
 
               <div className="space-y-3 text-xs">
                 
+                {contact.clientCandidateType === "candidate" && (
+                  <>
                 {/* CV/Link */}
                 <div>
                   <span className="text-zinc-500 block mb-1">CV / LinkedIn Link</span>
@@ -1341,6 +1343,46 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                     className="w-full border border-zinc-800 rounded-lg p-2 bg-zinc-900/50 text-zinc-200 placeholder-zinc-600"
                   />
                 </div>
+                  </>
+                )}
+
+                {contact.clientCandidateType === "client" && (
+                  <>
+                    {([
+                      ["companyName", "Company Name", "e.g. Acme Holdings"],
+                      ["companyWebsite", "Company Website", "https://company.com"],
+                      ["industry", "Industry", "e.g. Technology, Hospitality"],
+                      ["contactDesignation", "Contact Person Designation", "e.g. HR Manager"],
+                      ["hiringRequirements", "Hiring Roles / Requirements", "e.g. 3 Sales Executives"],
+                      ["vacancyCount", "Number of Vacancies", "e.g. 5"],
+                      ["hiringBudget", "Hiring Budget / Salary Range", "e.g. LKR 150,000–250,000"],
+                      ["companyLocation", "Company / Job Location", "e.g. Colombo 03"],
+                    ] as const).map(([field, label, placeholder]) => (
+                      <div key={field}>
+                        <span className="text-zinc-500 block mb-1">{label}</span>
+                        {field === "hiringRequirements" ? (
+                          <textarea
+                            rows={3}
+                            value={contact[field] || ""}
+                            onChange={(e) => setContact({ ...contact, [field]: e.target.value })}
+                            onBlur={() => handleSaveContactProfile({ [field]: contact[field] })}
+                            placeholder={placeholder}
+                            className="w-full border border-zinc-800 rounded-lg p-2 bg-zinc-900/50 text-zinc-200 placeholder-zinc-600 resize-none"
+                          />
+                        ) : (
+                          <input
+                            type={field === "companyWebsite" ? "url" : "text"}
+                            value={contact[field] || ""}
+                            onChange={(e) => setContact({ ...contact, [field]: e.target.value })}
+                            onBlur={() => handleSaveContactProfile({ [field]: contact[field] })}
+                            placeholder={placeholder}
+                            className="w-full border border-zinc-800 rounded-lg p-2 bg-zinc-900/50 text-zinc-200 placeholder-zinc-600"
+                          />
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
 
                 {/* Client or Candidate Type */}
                 <div>

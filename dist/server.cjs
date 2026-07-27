@@ -128,6 +128,14 @@ var contacts = (0, import_pg_core.pgTable)("contacts", {
   experience: (0, import_pg_core.text)("experience").notNull().default(""),
   clientCandidateType: (0, import_pg_core.text)("client_candidate_type").notNull().default("candidate"),
   // 'candidate' | 'client'
+  companyName: (0, import_pg_core.text)("company_name").notNull().default(""),
+  companyWebsite: (0, import_pg_core.text)("company_website").notNull().default(""),
+  industry: (0, import_pg_core.text)("industry").notNull().default(""),
+  contactDesignation: (0, import_pg_core.text)("contact_designation").notNull().default(""),
+  hiringRequirements: (0, import_pg_core.text)("hiring_requirements").notNull().default(""),
+  vacancyCount: (0, import_pg_core.text)("vacancy_count").notNull().default(""),
+  hiringBudget: (0, import_pg_core.text)("hiring_budget").notNull().default(""),
+  companyLocation: (0, import_pg_core.text)("company_location").notNull().default(""),
   createdAt: (0, import_pg_core.timestamp)("created_at").defaultNow()
 });
 var conversations = (0, import_pg_core.pgTable)("conversations", {
@@ -607,6 +615,17 @@ async function ensureSeedData() {
   return;
 }
 async function ensureMessageActionSchema() {
+  await db.execute(import_drizzle_orm2.sql`
+    ALTER TABLE contacts
+      ADD COLUMN IF NOT EXISTS company_name text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS company_website text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS industry text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS contact_designation text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS hiring_requirements text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS vacancy_count text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS hiring_budget text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS company_location text NOT NULL DEFAULT ''
+  `);
   await db.execute(import_drizzle_orm2.sql`
     ALTER TABLE messages
       ADD COLUMN IF NOT EXISTS reply_to_message_id integer,
@@ -1407,7 +1426,26 @@ app.put("/api/conversations/:id", authenticateJWT, async (req, res) => {
 });
 app.put("/api/contacts/:id", authenticateJWT, async (req, res) => {
   const { id } = req.params;
-  const { name, tags, notes, cvField, linkedinField, interestedJobRole, expectedSalary, location, experience, clientCandidateType } = req.body;
+  const {
+    name,
+    tags,
+    notes,
+    cvField,
+    linkedinField,
+    interestedJobRole,
+    expectedSalary,
+    location,
+    experience,
+    clientCandidateType,
+    companyName,
+    companyWebsite,
+    industry,
+    contactDesignation,
+    hiringRequirements,
+    vacancyCount,
+    hiringBudget,
+    companyLocation
+  } = req.body;
   try {
     const updates = {};
     if (name !== void 0) updates.name = name;
@@ -1420,6 +1458,14 @@ app.put("/api/contacts/:id", authenticateJWT, async (req, res) => {
     if (location !== void 0) updates.location = location;
     if (experience !== void 0) updates.experience = experience;
     if (clientCandidateType !== void 0) updates.clientCandidateType = clientCandidateType;
+    if (companyName !== void 0) updates.companyName = companyName;
+    if (companyWebsite !== void 0) updates.companyWebsite = companyWebsite;
+    if (industry !== void 0) updates.industry = industry;
+    if (contactDesignation !== void 0) updates.contactDesignation = contactDesignation;
+    if (hiringRequirements !== void 0) updates.hiringRequirements = hiringRequirements;
+    if (vacancyCount !== void 0) updates.vacancyCount = vacancyCount;
+    if (hiringBudget !== void 0) updates.hiringBudget = hiringBudget;
+    if (companyLocation !== void 0) updates.companyLocation = companyLocation;
     const [updated] = await db.update(schema_exports.contacts).set(updates).where((0, import_drizzle_orm2.eq)(schema_exports.contacts.id, parseInt(id))).returning();
     if (!updated) return res.status(404).json({ error: "Contact not found." });
     await auditLog(req.user.id, req.user.email, "Contact Updated", `Updated details for contact ${name || updated.phoneNumber}.`);

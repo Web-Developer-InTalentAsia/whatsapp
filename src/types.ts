@@ -43,6 +43,14 @@ export interface Contact {
   location: string;
   experience: string;
   clientCandidateType: 'candidate' | 'client';
+  companyName: string;
+  companyWebsite: string;
+  industry: string;
+  contactDesignation: string;
+  hiringRequirements: string;
+  vacancyCount: string;
+  hiringBudget: string;
+  companyLocation: string;
 }
 
 export interface Conversation {
