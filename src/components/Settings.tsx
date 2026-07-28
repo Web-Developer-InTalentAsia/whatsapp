@@ -1020,6 +1020,22 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                   </label>
                 </div>
 
+                <div className="md:col-span-2">
+                  {!aiSettings.autoReply ? (
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-4 py-3 text-[11px] text-zinc-400">
+                      Auto-reply is OFF. Recruiters can review grounded suggestions before sending. Direct requests for a recruiter still create a human handover.
+                    </div>
+                  ) : aiSettings.humanApprovalRequired ? (
+                    <div className="rounded-xl border border-amber-900/60 bg-amber-950/25 px-4 py-3 text-[11px] text-amber-300">
+                      Auto-reply is selected but blocked by Force Human Approval. No Gemini reply will be sent automatically.
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-rose-900/60 bg-rose-950/25 px-4 py-3 text-[11px] text-rose-300">
+                      LIVE AUTO-REPLY ENABLED: only verified grounded replies above the confidence threshold may be sent. Workflows and human handover always have priority.
+                    </div>
+                  )}
+                </div>
+
                 {/* Knowledge Base */}
                 <div className="md:col-span-2">
                   <label className="text-xs font-semibold text-zinc-400 block mb-1">Approved Company Knowledge Base</label>
