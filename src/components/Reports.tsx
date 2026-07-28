@@ -202,6 +202,7 @@ export default function Reports({ token, currentUser }: ReportsProps) {
             <option value="all">All Methods</option>
             <option value="manual">Manual Recruiter</option>
             <option value="ai">AI Suggestion</option>
+            <option value="handover">Handover Notice</option>
             <option value="workflow">Workflow Autopilot</option>
           </select>
         </div>

@@ -585,7 +585,7 @@ async function sendAutomatedAIWhatsAppText(params) {
         senderName: params.senderName || "InTalent AI Assistant",
         content,
         messageType: "text",
-        replyType: "ai",
+        replyType: params.replyType || "ai",
         status: "failed",
         timestamp: /* @__PURE__ */ new Date(),
         replyContextMetaMessageId: params.replyToMetaMessageId || null
@@ -617,7 +617,7 @@ async function sendAutomatedAIWhatsAppText(params) {
       senderName: params.senderName || "InTalent AI Assistant",
       content,
       messageType: "text",
-      replyType: "ai",
+      replyType: params.replyType || "ai",
       status: "sent",
       timestamp: /* @__PURE__ */ new Date(),
       metaMessageId: sentMetaMessageId,
@@ -656,7 +656,8 @@ async function handoverConversation(params) {
       content: AI_HANDOVER_CONFIRMATION,
       conversationStatus: "human_handover",
       replyToMetaMessageId: params.replyToMetaMessageId || null,
-      senderName: "InTalent Assistant"
+      senderName: "InTalent Assistant",
+      replyType: "handover"
     });
   } catch (error) {
     console.error(
@@ -2053,14 +2054,21 @@ app.put("/api/conversations/:id", authenticateJWT, async (req, res) => {
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: "No conversation changes were supplied." });
     }
+    if (["open", "human_handover", "closed"].includes(String(status || ""))) {
+      await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.and)(
+        (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.conversationId, parseInt(id)),
+        (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.isActive, true)
+      ));
+    }
     const [updated] = await db.update(schema_exports.conversations).set(updates).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, parseInt(id))).returning();
     if (!updated) {
       return res.status(404).json({ error: "Conversation not found." });
     }
+    const auditAction = status === "open" ? "Automation Resumed" : status === "human_handover" ? "Automation Paused" : "Conversation Updated";
     await auditLog(
       req.user.id,
       req.user.email,
-      "Conversation Updated",
+      auditAction,
       `Updated conversation ${id} (Status: ${status ?? "no-change"}, Read: ${isUnread === void 0 ? "no-change" : isUnread ? "unread" : "read"}, Assigned: ${assignedUserId ?? "no-change"}).`
     );
     res.json(updated);
@@ -2775,12 +2783,30 @@ ${messageText}` : String(messageText);
         mediaFilename,
         mediaCaption: String(messageText) || null
       }).returning();
-      await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open", isUnread: false }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
+      let nextConversationStatus = conv.status;
+      if (conv.status === "workflow_active") {
+        await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.and)(
+          (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.conversationId, convId),
+          (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.isActive, true)
+        ));
+        nextConversationStatus = "human_handover";
+      } else if (conv.status !== "human_handover") {
+        nextConversationStatus = "open";
+      }
+      const conversationUpdates = {
+        lastMessageAt: /* @__PURE__ */ new Date(),
+        status: nextConversationStatus,
+        isUnread: false
+      };
+      if (nextConversationStatus === "human_handover" && !conv.assignedUserId) {
+        conversationUpdates.assignedUserId = req.user.id;
+      }
+      await db.update(schema_exports.conversations).set(conversationUpdates).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
       await auditLog(
         req.user.id,
         req.user.email,
-        "Message Sent",
-        `Sent real WhatsApp reply to ${destinationPhone} (Conv ID: ${convId}).`
+        nextConversationStatus === "human_handover" ? "Recruiter Takeover Reply" : "Message Sent",
+        `Sent real WhatsApp reply to ${destinationPhone} (Conv ID: ${convId}, Status retained as ${nextConversationStatus}).`
       );
       return res.json(newMsg);
     } catch (metaError) {

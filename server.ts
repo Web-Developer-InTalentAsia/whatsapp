@@ -313,6 +313,7 @@ async function sendAutomatedAIWhatsAppText(params: {
   conversationStatus: "open" | "human_handover";
   replyToMetaMessageId?: string | null;
   senderName?: string;
+  replyType?: "ai" | "handover";
 }) {
   const content = normalizeAIText(params.content, AI_AUTO_REPLY_MAX_LENGTH);
   if (!content) throw new Error("Automated AI reply text is empty.");
@@ -325,7 +326,7 @@ async function sendAutomatedAIWhatsAppText(params: {
         senderName: params.senderName || "InTalent AI Assistant",
         content,
         messageType: "text",
-        replyType: "ai",
+        replyType: params.replyType || "ai",
         status: "failed",
         timestamp: new Date(),
         replyContextMetaMessageId: params.replyToMetaMessageId || null,
@@ -360,7 +361,7 @@ async function sendAutomatedAIWhatsAppText(params: {
       senderName: params.senderName || "InTalent AI Assistant",
       content,
       messageType: "text",
-      replyType: "ai",
+      replyType: params.replyType || "ai",
       status: "sent",
       timestamp: new Date(),
       metaMessageId: sentMetaMessageId,
@@ -425,6 +426,7 @@ async function handoverConversation(params: {
       conversationStatus: "human_handover",
       replyToMetaMessageId: params.replyToMetaMessageId || null,
       senderName: "InTalent Assistant",
+      replyType: "handover",
     });
   } catch (error) {
     console.error(
@@ -2527,6 +2529,18 @@ app.put("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
       return res.status(400).json({ error: "No conversation changes were supplied." });
     }
 
+    // Explicit recruiter takeover, automation resume, or closure must terminate
+    // any stale workflow session. Future inbound messages may start a new workflow
+    // only after the conversation has been deliberately returned to `open`.
+    if (["open", "human_handover", "closed"].includes(String(status || ""))) {
+      await db.update(schema.workflowSessions)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(and(
+          eq(schema.workflowSessions.conversationId, parseInt(id)),
+          eq(schema.workflowSessions.isActive, true),
+        ));
+    }
+
     const [updated] = await db.update(schema.conversations)
       .set(updates)
       .where(eq(schema.conversations.id, parseInt(id)))
@@ -2536,10 +2550,16 @@ app.put("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
       return res.status(404).json({ error: "Conversation not found." });
     }
 
+    const auditAction = status === "open"
+      ? "Automation Resumed"
+      : status === "human_handover"
+        ? "Automation Paused"
+        : "Conversation Updated";
+
     await auditLog(
       req.user.id,
       req.user.email,
-      "Conversation Updated",
+      auditAction,
       `Updated conversation ${id} (Status: ${status ?? "no-change"}, Read: ${isUnread === undefined ? "no-change" : (isUnread ? "unread" : "read")}, Assigned: ${assignedUserId ?? "no-change"}).`,
     );
     res.json(updated);
@@ -3478,17 +3498,42 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
         })
         .returning();
 
-      // 7. Update conversation
+      // 7. Update conversation without silently re-enabling automation.
+      // A recruiter reply during an existing handover keeps the takeover lock.
+      // A recruiter reply during a workflow is treated as a human intervention:
+      // the workflow is stopped and the conversation moves to handover.
+      let nextConversationStatus = conv.status;
+      if (conv.status === "workflow_active") {
+        await db.update(schema.workflowSessions)
+          .set({ isActive: false, updatedAt: new Date() })
+          .where(and(
+            eq(schema.workflowSessions.conversationId, convId),
+            eq(schema.workflowSessions.isActive, true),
+          ));
+        nextConversationStatus = "human_handover";
+      } else if (conv.status !== "human_handover") {
+        nextConversationStatus = "open";
+      }
+
+      const conversationUpdates: any = {
+        lastMessageAt: new Date(),
+        status: nextConversationStatus,
+        isUnread: false,
+      };
+      if (nextConversationStatus === "human_handover" && !conv.assignedUserId) {
+        conversationUpdates.assignedUserId = req.user.id;
+      }
+
       await db
         .update(schema.conversations)
-        .set({ lastMessageAt: new Date(), status: "open", isUnread: false })
+        .set(conversationUpdates)
         .where(eq(schema.conversations.id, convId));
 
       await auditLog(
         req.user.id,
         req.user.email,
-        "Message Sent",
-        `Sent real WhatsApp reply to ${destinationPhone} (Conv ID: ${convId}).`
+        nextConversationStatus === "human_handover" ? "Recruiter Takeover Reply" : "Message Sent",
+        `Sent real WhatsApp reply to ${destinationPhone} (Conv ID: ${convId}, Status retained as ${nextConversationStatus}).`
       );
 
       return res.json(newMsg);

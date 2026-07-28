@@ -75,7 +75,7 @@ export interface Message {
   senderName: string;
   content: string;
   messageType: 'text' | 'document' | 'cv' | 'location' | 'image' | 'video' | 'audio' | 'sticker';
-  replyType: 'manual' | 'ai' | 'workflow' | 'none';
+  replyType: 'manual' | 'ai' | 'workflow' | 'handover' | 'none';
   status: 'sent' | 'received' | 'failed';
   timestamp: string;
   agentId?: number | null;

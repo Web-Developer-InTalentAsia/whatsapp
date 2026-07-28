@@ -74,6 +74,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const [loadingList, setLoadingList] = useState(true);
   const [loadingChat, setLoadingChat] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
+  const [resumingAutomation, setResumingAutomation] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null);
@@ -630,9 +631,48 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     }
   };
 
+  const handleResumeAutomation = async () => {
+    if (!selectedConversation || selectedConversation.status !== "human_handover") return;
+    const confirmed = window.confirm(
+      "Resume automation for this conversation? Future candidate messages may be handled by AI or a matching workflow."
+    );
+    if (!confirmed) return;
+
+    setResumingAutomation(true);
+    try {
+      const response = await fetch(`/api/conversations/${selectedConversation.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ status: "open", isUnread: false })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(data.error || "Could not resume automation.");
+        return;
+      }
+      setSelectedConversation(previous => previous
+        ? { ...previous, status: "open", isUnread: false }
+        : previous
+      );
+      await fetchConversations(selectedConversation.id);
+    } catch (err) {
+      console.error(err);
+      alert("Could not resume automation.");
+    } finally {
+      setResumingAutomation(false);
+    }
+  };
+
   // Quick Action Toggles on Conversation
   const handleUpdateConvStatus = async (status: string) => {
     if (!selectedConversation) return;
+    if (selectedConversation.status === "human_handover" && status === "open") {
+      await handleResumeAutomation();
+      return;
+    }
     try {
       const response = await fetch(`/api/conversations/${selectedConversation.id}`, {
         method: "PUT",
@@ -937,7 +977,8 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                 <select
                   value={selectedConversation.status}
                   onChange={(e) => handleUpdateConvStatus(e.target.value)}
-                  className="border border-zinc-800 rounded-lg text-xs py-1 px-1.5 bg-zinc-900 focus:ring-1 focus:ring-emerald-500 text-zinc-300 font-semibold"
+                  disabled={resumingAutomation}
+                  className="border border-zinc-800 rounded-lg text-xs py-1 px-1.5 bg-zinc-900 focus:ring-1 focus:ring-emerald-500 text-zinc-300 font-semibold disabled:opacity-60"
                 >
                   <option value="open">Open</option>
                   <option value="human_handover">Recruiter Handover</option>
@@ -946,6 +987,28 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                 </select>
               </div>
             </div>
+
+            {selectedConversation.status === "human_handover" && (
+              <div className="mx-6 mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-center justify-between gap-4">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-xs font-bold text-amber-300">Recruiter takeover is active</p>
+                    <p className="text-[11px] text-amber-100/70 mt-0.5">
+                      AI and workflows stay paused after manual replies. Resume automation only when the recruiter has finished this conversation.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleResumeAutomation}
+                  disabled={resumingAutomation}
+                  className="shrink-0 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-[11px] font-bold text-amber-200 hover:bg-amber-400/20 disabled:opacity-50"
+                >
+                  {resumingAutomation ? "Resuming…" : "Resume Automation"}
+                </button>
+              </div>
+            )}
 
             {/* Chat message list area */}
             <div ref={messagesContainerRef} className="flex-1 min-h-0 overflow-y-auto p-6 bg-[#060608] space-y-4">
@@ -1059,7 +1122,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                             
                             {!isContact && m.replyType && m.replyType !== "none" && (
                               <span className="text-[9px] bg-emerald-750 text-emerald-100 font-bold px-2 py-0.5 rounded uppercase tracking-wider">
-                                {m.replyType} reply
+                                {m.replyType === "handover" ? "handover notice" : `${m.replyType} reply`}
                               </span>
                             )}
                           </div>
