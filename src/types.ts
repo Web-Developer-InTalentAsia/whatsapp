@@ -15,9 +15,12 @@ export interface WhatsAppNumber {
   phoneNumberId: string;
   wabaId: string;
   appId: string;
-  appSecret: string;
-  accessToken: string;
-  verifyToken: string;
+  appSecret?: string;
+  accessToken?: string;
+  verifyToken?: string;
+  hasAppSecret?: boolean;
+  hasAccessToken?: boolean;
+  hasVerifyToken?: boolean;
   webhookStatus: string; // 'Verified' | 'Pending'
   lastVerified?: string | null;
   isActive: boolean;
@@ -124,7 +127,7 @@ export interface AISettings {
   id: number;
   whatsappNumberId: number;
   aiProvider: string;
-  apiKey: string;
+  apiConfigured?: boolean;
   modelName: string;
   defaultTone: 'professional' | 'casual' | 'friendly' | 'helpful';
   companyKnowledgeBase: string;

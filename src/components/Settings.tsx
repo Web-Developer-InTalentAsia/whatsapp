@@ -90,7 +90,13 @@ export default function Settings({ token, currentUser }: SettingsProps) {
 
   const handleSelectNumber = async (num: WhatsAppNumber) => {
     setSelectedNumber(num);
-    setNumForm(num);
+    // Secrets are intentionally write-only and are never returned by the API.
+    setNumForm({
+      ...num,
+      appSecret: "",
+      accessToken: "",
+      verifyToken: "",
+    });
     setConnectionMessage("");
     setTestReplyMessage("");
     
@@ -162,13 +168,22 @@ export default function Settings({ token, currentUser }: SettingsProps) {
       const url = isNew ? "/api/whatsapp_numbers" : `/api/whatsapp_numbers/${numForm.id}`;
       const method = isNew ? "POST" : "PUT";
 
+      const payload: Record<string, unknown> = { ...numForm };
+
+      // For an existing number, blank secret fields mean "keep the saved value".
+      if (!isNew) {
+        if (!String(numForm.appSecret || "").trim()) delete payload.appSecret;
+        if (!String(numForm.accessToken || "").trim()) delete payload.accessToken;
+        if (!String(numForm.verifyToken || "").trim()) delete payload.verifyToken;
+      }
+
       const response = await fetch(url, {
         method,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify(numForm)
+        body: JSON.stringify(payload)
       });
 
       const data = await response.json();
@@ -238,7 +253,9 @@ export default function Settings({ token, currentUser }: SettingsProps) {
       setTestReplyMessage("FAILED: Activate this WhatsApp receiving line and save the configuration first.");
       return;
     }
-    if (!numForm.phoneNumberId || !numForm.accessToken) {
+    const hasSavedAccessToken = Boolean(selectedNumber.hasAccessToken);
+    const hasNewAccessToken = Boolean(String(numForm.accessToken || "").trim());
+    if (!numForm.phoneNumberId || (!hasSavedAccessToken && !hasNewAccessToken)) {
       setTestReplyMessage("FAILED: Enter the Phone Number ID and Permanent Access Token, then save the configuration.");
       return;
     }
@@ -716,7 +733,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                       className="text-[10px] text-emerald-400 hover:text-emerald-350 flex items-center gap-1 font-semibold"
                     >
                       {showSecret ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                      {showSecret ? "Hide" : "Show"}
+                      {showSecret ? "Hide new values" : "Show new values"}
                     </button>
                   </div>
                   <input
@@ -725,6 +742,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                     value={numForm.appSecret || ""}
                     onChange={(e) => setNumForm({ ...numForm, appSecret: e.target.value })}
                     className="w-full border border-zinc-800 rounded-xl p-2.5 bg-[#09090b] text-xs text-zinc-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none disabled:opacity-50 font-mono"
+                    placeholder={selectedNumber?.hasAppSecret ? "Saved securely — enter only to replace" : "Enter Meta App Secret"}
                   />
                 </div>
 
@@ -736,18 +754,19 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                     value={numForm.accessToken || ""}
                     onChange={(e) => setNumForm({ ...numForm, accessToken: e.target.value })}
                     className="w-full border border-zinc-800 rounded-xl p-2.5 bg-[#09090b] text-xs text-zinc-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none disabled:opacity-50 font-mono"
+                    placeholder={selectedNumber?.hasAccessToken ? "Saved securely — enter only to replace" : "Enter Permanent Access Token"}
                   />
                 </div>
 
                 <div>
                   <label className="text-xs font-semibold text-zinc-400 block mb-1">Webhook Verify Token (Your Custom Secret)</label>
                   <input
-                    type="text"
+                    type={showSecret ? "text" : "password"}
                     disabled={currentUser.role === "user"}
                     value={numForm.verifyToken || ""}
                     onChange={(e) => setNumForm({ ...numForm, verifyToken: e.target.value })}
                     className="w-full border border-zinc-800 rounded-xl p-2.5 bg-[#09090b] text-xs text-zinc-100 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none disabled:opacity-50 font-mono"
-                    placeholder="e.g. my_secure_verify_token"
+                    placeholder={selectedNumber?.hasVerifyToken ? "Saved securely — enter only to replace" : "Enter Webhook Verify Token"}
                   />
                 </div>
 

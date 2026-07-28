@@ -98,6 +98,26 @@ function normalizeWhatsAppNumber(phone: string) {
   return String(phone || "").trim().replace(/[^\d]/g, "");
 }
 
+function sanitizeWhatsAppNumber(number: any) {
+  const { appSecret, accessToken, verifyToken, ...safeNumber } = number;
+
+  return {
+    ...safeNumber,
+    hasAppSecret: Boolean(String(appSecret || "").trim()),
+    hasAccessToken: Boolean(String(accessToken || "").trim()),
+    hasVerifyToken: Boolean(String(verifyToken || "").trim()),
+  };
+}
+
+function sanitizeAISettings(settings: any) {
+  const { apiKey, ...safeSettings } = settings;
+
+  return {
+    ...safeSettings,
+    apiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+  };
+}
+
 function getMetaApiErrorMessage(data: any, fallbackStatus: number) {
   return (
     data?.error?.error_user_msg ||
@@ -984,7 +1004,7 @@ app.get("/api/whatsapp_numbers", authenticateJWT, async (req: any, res) => {
       const primary = owners.find(o => o.isPrimary);
 
       return {
-        ...num,
+        ...sanitizeWhatsAppNumber(num),
         assignedUsers: owners,
         primaryOwner: primary ? primary.userName : "None"
       };
@@ -1039,7 +1059,7 @@ app.post("/api/whatsapp_numbers", authenticateJWT, requireRoles(["super_admin"])
 
     await auditLog(req.user.id, req.user.email, "WhatsApp Number Added", `Added WhatsApp number ${displayName} (${phoneNumber}).`);
 
-    res.json(newNumber);
+    res.json(sanitizeWhatsAppNumber(newNumber));
   } catch (error: any) {
     if (error.code === "23505" || error.message?.includes("unique")) {
       return res.status(400).json({ error: "A WhatsApp number with this phone number already exists." });
@@ -1072,9 +1092,10 @@ app.put("/api/whatsapp_numbers/:id", authenticateJWT, requireRoles(["super_admin
     if (phoneNumberId !== undefined) updates.phoneNumberId = phoneNumberId;
     if (wabaId !== undefined) updates.wabaId = wabaId;
     if (appId !== undefined) updates.appId = appId;
-    if (appSecret !== undefined) updates.appSecret = appSecret;
-    if (accessToken !== undefined) updates.accessToken = accessToken;
-    if (verifyToken !== undefined) updates.verifyToken = verifyToken;
+    // Secret values are write-only. Empty strings mean "keep the existing secret".
+    if (typeof appSecret === "string" && appSecret.trim()) updates.appSecret = appSecret.trim();
+    if (typeof accessToken === "string" && accessToken.trim()) updates.accessToken = accessToken.trim();
+    if (typeof verifyToken === "string" && verifyToken.trim()) updates.verifyToken = verifyToken.trim();
     if (isActive !== undefined) updates.isActive = isActive;
     if (webhookStatus !== undefined) updates.webhookStatus = webhookStatus;
 
@@ -1089,7 +1110,7 @@ app.put("/api/whatsapp_numbers/:id", authenticateJWT, requireRoles(["super_admin
 
     await auditLog(req.user.id, req.user.email, "WhatsApp Number Updated", `Updated settings for ${updated.displayName}.`);
 
-    res.json(updated);
+    res.json(sanitizeWhatsAppNumber(updated));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1244,7 +1265,7 @@ app.get("/api/whatsapp_numbers/:id/ai-settings", authenticateJWT, async (req, re
         humanApprovalRequired: true,
       }).returning();
     }
-    res.json(settings);
+    res.json(sanitizeAISettings(settings));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -1252,11 +1273,10 @@ app.get("/api/whatsapp_numbers/:id/ai-settings", authenticateJWT, async (req, re
 
 app.put("/api/whatsapp_numbers/:id/ai-settings", authenticateJWT, requireRoles(["super_admin", "admin"]), async (req: any, res) => {
   const { id } = req.params;
-  const { aiProvider, apiKey, modelName, defaultTone, companyKnowledgeBase, restrictedWords, autoSuggest, autoReply, humanApprovalRequired } = req.body;
+  const { aiProvider, modelName, defaultTone, companyKnowledgeBase, restrictedWords, autoSuggest, autoReply, humanApprovalRequired } = req.body;
   try {
     const updates: any = {};
     if (aiProvider !== undefined) updates.aiProvider = aiProvider;
-    if (apiKey !== undefined) updates.apiKey = apiKey;
     if (modelName !== undefined) updates.modelName = modelName;
     if (defaultTone !== undefined) updates.defaultTone = defaultTone;
     if (companyKnowledgeBase !== undefined) updates.companyKnowledgeBase = companyKnowledgeBase;
@@ -1271,7 +1291,7 @@ app.put("/api/whatsapp_numbers/:id/ai-settings", authenticateJWT, requireRoles([
       .returning();
 
     await auditLog(req.user.id, req.user.email, "AI Settings Updated", `Updated AI settings for WhatsApp Number ID ${id}.`);
-    res.json(updated);
+    res.json(sanitizeAISettings(updated));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

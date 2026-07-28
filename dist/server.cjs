@@ -432,6 +432,22 @@ var MetaApiError = class extends Error {
 function normalizeWhatsAppNumber(phone) {
   return String(phone || "").trim().replace(/[^\d]/g, "");
 }
+function sanitizeWhatsAppNumber(number) {
+  const { appSecret, accessToken, verifyToken, ...safeNumber } = number;
+  return {
+    ...safeNumber,
+    hasAppSecret: Boolean(String(appSecret || "").trim()),
+    hasAccessToken: Boolean(String(accessToken || "").trim()),
+    hasVerifyToken: Boolean(String(verifyToken || "").trim())
+  };
+}
+function sanitizeAISettings(settings) {
+  const { apiKey, ...safeSettings } = settings;
+  return {
+    ...safeSettings,
+    apiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim())
+  };
+}
 function getMetaApiErrorMessage(data, fallbackStatus) {
   return data?.error?.error_user_msg || data?.error?.message || data?.message || `Meta API request failed with status ${fallbackStatus}`;
 }
@@ -880,7 +896,7 @@ app.get("/api/whatsapp_numbers", authenticateJWT, async (req, res) => {
       }).from(schema_exports.userNumberAssignments).innerJoin(schema_exports.users, (0, import_drizzle_orm2.eq)(schema_exports.userNumberAssignments.userId, schema_exports.users.id)).where((0, import_drizzle_orm2.eq)(schema_exports.userNumberAssignments.numberId, num.id));
       const primary = owners.find((o) => o.isPrimary);
       return {
-        ...num,
+        ...sanitizeWhatsAppNumber(num),
         assignedUsers: owners,
         primaryOwner: primary ? primary.userName : "None"
       };
@@ -926,7 +942,7 @@ app.post("/api/whatsapp_numbers", authenticateJWT, requireRoles(["super_admin"])
       isPrimaryOwner: true
     });
     await auditLog(req.user.id, req.user.email, "WhatsApp Number Added", `Added WhatsApp number ${displayName} (${phoneNumber}).`);
-    res.json(newNumber);
+    res.json(sanitizeWhatsAppNumber(newNumber));
   } catch (error) {
     if (error.code === "23505" || error.message?.includes("unique")) {
       return res.status(400).json({ error: "A WhatsApp number with this phone number already exists." });
@@ -953,9 +969,9 @@ app.put("/api/whatsapp_numbers/:id", authenticateJWT, requireRoles(["super_admin
     if (phoneNumberId !== void 0) updates.phoneNumberId = phoneNumberId;
     if (wabaId !== void 0) updates.wabaId = wabaId;
     if (appId !== void 0) updates.appId = appId;
-    if (appSecret !== void 0) updates.appSecret = appSecret;
-    if (accessToken !== void 0) updates.accessToken = accessToken;
-    if (verifyToken !== void 0) updates.verifyToken = verifyToken;
+    if (typeof appSecret === "string" && appSecret.trim()) updates.appSecret = appSecret.trim();
+    if (typeof accessToken === "string" && accessToken.trim()) updates.accessToken = accessToken.trim();
+    if (typeof verifyToken === "string" && verifyToken.trim()) updates.verifyToken = verifyToken.trim();
     if (isActive !== void 0) updates.isActive = isActive;
     if (webhookStatus !== void 0) updates.webhookStatus = webhookStatus;
     const [updated] = await db.update(schema_exports.whatsappNumbers).set(updates).where((0, import_drizzle_orm2.eq)(schema_exports.whatsappNumbers.id, parseInt(id))).returning();
@@ -963,7 +979,7 @@ app.put("/api/whatsapp_numbers/:id", authenticateJWT, requireRoles(["super_admin
       return res.status(404).json({ error: "WhatsApp number not found." });
     }
     await auditLog(req.user.id, req.user.email, "WhatsApp Number Updated", `Updated settings for ${updated.displayName}.`);
-    res.json(updated);
+    res.json(sanitizeWhatsAppNumber(updated));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1093,18 +1109,17 @@ app.get("/api/whatsapp_numbers/:id/ai-settings", authenticateJWT, async (req, re
         humanApprovalRequired: true
       }).returning();
     }
-    res.json(settings);
+    res.json(sanitizeAISettings(settings));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 app.put("/api/whatsapp_numbers/:id/ai-settings", authenticateJWT, requireRoles(["super_admin", "admin"]), async (req, res) => {
   const { id } = req.params;
-  const { aiProvider, apiKey, modelName, defaultTone, companyKnowledgeBase, restrictedWords, autoSuggest, autoReply, humanApprovalRequired } = req.body;
+  const { aiProvider, modelName, defaultTone, companyKnowledgeBase, restrictedWords, autoSuggest, autoReply, humanApprovalRequired } = req.body;
   try {
     const updates = {};
     if (aiProvider !== void 0) updates.aiProvider = aiProvider;
-    if (apiKey !== void 0) updates.apiKey = apiKey;
     if (modelName !== void 0) updates.modelName = modelName;
     if (defaultTone !== void 0) updates.defaultTone = defaultTone;
     if (companyKnowledgeBase !== void 0) updates.companyKnowledgeBase = companyKnowledgeBase;
@@ -1114,7 +1129,7 @@ app.put("/api/whatsapp_numbers/:id/ai-settings", authenticateJWT, requireRoles([
     if (humanApprovalRequired !== void 0) updates.humanApprovalRequired = humanApprovalRequired;
     const [updated] = await db.update(schema_exports.aiSettings).set(updates).where((0, import_drizzle_orm2.eq)(schema_exports.aiSettings.whatsappNumberId, parseInt(id))).returning();
     await auditLog(req.user.id, req.user.email, "AI Settings Updated", `Updated AI settings for WhatsApp Number ID ${id}.`);
-    res.json(updated);
+    res.json(sanitizeAISettings(updated));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
