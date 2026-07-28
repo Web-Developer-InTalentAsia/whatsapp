@@ -76,8 +76,7 @@ export const conversations = pgTable('conversations', {
   contactId: integer('contact_id').references(() => contacts.id, { onDelete: 'cascade' }).notNull(),
   whatsappNumberId: integer('whatsapp_number_id').references(() => whatsappNumbers.id, { onDelete: 'cascade' }).notNull(),
   assignedUserId: integer('assigned_user_id').references(() => users.id, { onDelete: 'set null' }),
-  status: text('status').notNull().default('open'), // 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed'
-  isUnread: boolean('is_unread').notNull().default(false),
+  status: text('status').notNull().default('unread'), // 'unread' | 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed'
   lastMessageAt: timestamp('last_message_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow(),
 });

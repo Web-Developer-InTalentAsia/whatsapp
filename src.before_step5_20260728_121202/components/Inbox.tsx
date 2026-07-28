@@ -157,8 +157,9 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     fetchAllUsers();
   }, [filter, assignedToMe, search, token]);
 
-  // Keep the thread rail in sync with inbound webhook messages. Read/unread is
-  // now independent from workflow, AI, handover, and closed business states.
+  // Keep the thread rail in sync with inbound webhook messages. The webhook
+  // marks the conversation as unread; polling makes that state visible without
+  // requiring the recruiter to manually refresh the inbox.
   useEffect(() => {
     const refreshInterval = window.setInterval(() => {
       if (document.visibilityState === "visible") {
@@ -168,50 +169,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
     return () => window.clearInterval(refreshInterval);
   }, [filter, assignedToMe, search, token, selectedConversation?.id]);
-
-  // Opening a conversation marks only its read flag as cleared. Its workflow,
-  // handover, AI, or closed state remains unchanged. This also handles a new
-  // inbound message that arrives while the recruiter already has the thread open.
-  useEffect(() => {
-    if (!selectedConversation?.isUnread || document.visibilityState !== "visible") {
-      return;
-    }
-
-    const conversationId = selectedConversation.id;
-    let stopped = false;
-
-    void fetch(`/api/conversations/${conversationId}`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ isUnread: false }),
-    })
-      .then(response => {
-        if (!response.ok || stopped) return;
-
-        setSelectedConversation(previous =>
-          previous?.id === conversationId
-            ? { ...previous, isUnread: false }
-            : previous,
-        );
-        setConversations(previous =>
-          filter === "unread"
-            ? previous.filter(conversation => conversation.id !== conversationId)
-            : previous.map(conversation =>
-                conversation.id === conversationId
-                  ? { ...conversation, isUnread: false }
-                  : conversation,
-              ),
-        );
-      })
-      .catch(error => console.error("Unable to mark conversation as read:", error));
-
-    return () => {
-      stopped = true;
-    };
-  }, [selectedConversation?.id, selectedConversation?.isUnread, token, filter]);
 
   // Keep the open thread synchronized as webhook messages arrive. Previously
   // only the conversation rail refreshed, so a quoted inbound reply could look
@@ -285,10 +242,20 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
       }
 
-      // 3. Read state is cleared by the selected-conversation effect without
-      // changing the conversation's workflow/handover status.
+      // 3. Mark as open/read automatically if unread
+      if (conv.status === "unread") {
+        await fetch(`/api/conversations/${conv.id}`, {
+          method: "PUT",
+          headers: { 
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ status: "open" })
+        });
+        fetchConversations(conv.id);
+      }
 
-      // 4. Fetch Quick Replies for this WhatsApp line
+      // 5. Fetch Quick Replies for this WhatsApp line
       const qrRes = await fetch(`/api/whatsapp_numbers/${conv.whatsappNumberId}/quick-replies`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -778,7 +745,10 @@ export default function Inbox({ token, currentUser }: InboxProps) {
               // Status Styling
               let statusLabel = "";
               let statusClass = "";
-              if (conv.status === "human_handover") {
+              if (conv.status === "unread") {
+                statusLabel = "Unread";
+                statusClass = "bg-amber-950/40 text-amber-400 border border-amber-900/40";
+              } else if (conv.status === "human_handover") {
                 statusLabel = "Live Recruiter";
                 statusClass = "bg-rose-950/40 text-rose-400 border border-rose-900/40";
               } else if (conv.status === "ai_suggested") {
@@ -794,7 +764,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   key={conv.id}
                   onClick={() => handleSelectConversation(conv)}
                   className={`relative p-4 transition cursor-pointer flex flex-col gap-1.5 ${
-                    conv.isUnread
+                    conv.status === "unread"
                       ? "bg-emerald-950/25 border-l-4 border-emerald-400 hover:bg-emerald-950/40"
                       : "hover:bg-zinc-900/40 border-l-4 border-transparent"
                   } ${
@@ -803,20 +773,20 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                 >
                   <div className="flex justify-between items-start">
                     <div className="flex items-center gap-2 min-w-0">
-                      {conv.isUnread && (
+                      {conv.status === "unread" && (
                         <span
                           className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)] shrink-0"
                           aria-label="Unread conversation"
                         />
                       )}
                       <h4 className={`text-sm truncate max-w-[150px] ${
-                        conv.isUnread ? "font-bold text-white" : "font-semibold text-zinc-200"
+                        conv.status === "unread" ? "font-bold text-white" : "font-semibold text-zinc-200"
                       }`}>
                         {conv.contactName || conv.contactPhone}
                       </h4>
                     </div>
                     <span className={`text-xs shrink-0 ${
-                      conv.isUnread ? "font-semibold text-emerald-300" : "text-zinc-500"
+                      conv.status === "unread" ? "font-semibold text-emerald-300" : "text-zinc-500"
                     }`}>{formattedTime}</span>
                   </div>
 
@@ -829,11 +799,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                       via {conv.whatsappNumberName}
                     </span>
                     <div className="flex gap-1 shrink-0">
-                      {conv.isUnread && (
-                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-amber-950/40 text-amber-400 border-amber-900/40">
-                          Unread
-                        </span>
-                      )}
                       {statusLabel && (
                         <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${statusClass}`}>
                           {statusLabel}

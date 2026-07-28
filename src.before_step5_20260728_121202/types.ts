@@ -61,8 +61,7 @@ export interface Conversation {
   contactId: number;
   whatsappNumberId: number;
   assignedUserId?: number | null;
-  status: 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed';
-  isUnread: boolean;
+  status: 'unread' | 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed';
   lastMessageAt: string;
   createdAt?: string;
   contact?: Contact;

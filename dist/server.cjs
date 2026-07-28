@@ -143,8 +143,9 @@ var conversations = (0, import_pg_core.pgTable)("conversations", {
   contactId: (0, import_pg_core.integer)("contact_id").references(() => contacts.id, { onDelete: "cascade" }).notNull(),
   whatsappNumberId: (0, import_pg_core.integer)("whatsapp_number_id").references(() => whatsappNumbers.id, { onDelete: "cascade" }).notNull(),
   assignedUserId: (0, import_pg_core.integer)("assigned_user_id").references(() => users.id, { onDelete: "set null" }),
-  status: (0, import_pg_core.text)("status").notNull().default("unread"),
-  // 'unread' | 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed'
+  status: (0, import_pg_core.text)("status").notNull().default("open"),
+  // 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed'
+  isUnread: (0, import_pg_core.boolean)("is_unread").notNull().default(false),
   lastMessageAt: (0, import_pg_core.timestamp)("last_message_at").defaultNow(),
   createdAt: (0, import_pg_core.timestamp)("created_at").defaultNow()
 });
@@ -566,6 +567,94 @@ async function sendWhatsAppTextMessage(params) {
   }
   return data;
 }
+var WorkflowDeliveryError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "WorkflowDeliveryError";
+  }
+};
+async function sendWorkflowWhatsAppTextMessage(params) {
+  const content = String(params.content || "").trim();
+  if (!content) {
+    throw new Error("Workflow message text is empty.");
+  }
+  const saveFailedMessage = async (reason) => {
+    try {
+      await db.insert(schema_exports.messages).values({
+        conversationId: params.conversationId,
+        sender: "system",
+        senderName: "Workflow Engine",
+        content,
+        messageType: "text",
+        replyType: "workflow",
+        status: "failed",
+        timestamp: /* @__PURE__ */ new Date()
+      });
+    } catch (saveError) {
+      console.error(
+        `Could not save failed workflow message (${reason}):`,
+        saveError
+      );
+    }
+  };
+  const [conversation] = await db.select().from(schema_exports.conversations).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, params.conversationId)).limit(1);
+  if (!conversation) {
+    throw new Error("Workflow conversation was not found.");
+  }
+  if (conversation.whatsappNumberId !== params.whatsappNumberId || conversation.contactId !== params.contactId) {
+    throw new Error("Workflow conversation, contact, or WhatsApp number mismatch.");
+  }
+  const [contact] = await db.select().from(schema_exports.contacts).where((0, import_drizzle_orm2.eq)(schema_exports.contacts.id, params.contactId)).limit(1);
+  if (!contact) {
+    throw new Error("Workflow contact was not found.");
+  }
+  const [whatsappNumber] = await db.select().from(schema_exports.whatsappNumbers).where((0, import_drizzle_orm2.eq)(schema_exports.whatsappNumbers.id, params.whatsappNumberId)).limit(1);
+  if (!whatsappNumber) {
+    throw new Error("Workflow WhatsApp number configuration was not found.");
+  }
+  if (!whatsappNumber.isActive) {
+    const message = "The configured WhatsApp number is inactive.";
+    await saveFailedMessage(message);
+    throw new WorkflowDeliveryError(message);
+  }
+  if (!whatsappNumber.phoneNumberId || !whatsappNumber.accessToken) {
+    const message = "Phone Number ID or Access Token is missing in WhatsApp settings.";
+    await saveFailedMessage(message);
+    throw new WorkflowDeliveryError(message);
+  }
+  let metaResult;
+  try {
+    metaResult = await sendWhatsAppTextMessage({
+      phoneNumberId: whatsappNumber.phoneNumberId,
+      accessToken: whatsappNumber.accessToken,
+      to: contact.phoneNumber,
+      body: content
+    });
+  } catch (error) {
+    const message = error?.message || "Unknown Meta WhatsApp error.";
+    await saveFailedMessage(message);
+    console.error(
+      `Workflow WhatsApp send failed for conversation ${params.conversationId}: ${message}`
+    );
+    throw new WorkflowDeliveryError(message);
+  }
+  const sentMetaMessageId = String(metaResult?.messages?.[0]?.id || "").trim() || null;
+  const [savedMessage] = await db.insert(schema_exports.messages).values({
+    conversationId: params.conversationId,
+    sender: "system",
+    senderName: "Workflow Engine",
+    content,
+    messageType: "text",
+    replyType: "workflow",
+    status: "sent",
+    timestamp: /* @__PURE__ */ new Date(),
+    metaMessageId: sentMetaMessageId
+  }).returning();
+  console.log(
+    `Workflow WhatsApp message sent to ${normalizeWhatsAppNumber(contact.phoneNumber)} (conversation ${params.conversationId}, Meta ID ${sentMetaMessageId || "not returned"}).`
+  );
+  return savedMessage;
+}
 async function uploadWhatsAppMedia(params) {
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
@@ -632,6 +721,34 @@ async function ensureSeedData() {
 }
 async function ensureMessageActionSchema() {
   await db.execute(import_drizzle_orm2.sql`
+    ALTER TABLE conversations
+      ADD COLUMN IF NOT EXISTS is_unread boolean NOT NULL DEFAULT false
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    ALTER TABLE conversations
+      ALTER COLUMN status SET DEFAULT 'open'
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    UPDATE conversations
+      SET is_unread = true,
+          status = 'open'
+      WHERE status = 'unread'
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    UPDATE conversations AS conversation
+      SET status = 'workflow_active'
+      WHERE EXISTS (
+        SELECT 1
+        FROM workflow_sessions AS session
+        WHERE session.conversation_id = conversation.id
+          AND session.is_active = true
+      )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_conversations_is_unread
+      ON conversations (is_unread)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
     ALTER TABLE contacts
       ADD COLUMN IF NOT EXISTS company_name text NOT NULL DEFAULT '',
       ADD COLUMN IF NOT EXISTS company_website text NOT NULL DEFAULT '',
@@ -665,6 +782,33 @@ async function ensureMessageActionSchema() {
       updated_at timestamp DEFAULT now(),
       UNIQUE (message_id, user_id)
     )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    UPDATE messages
+      SET meta_message_id = NULL
+      WHERE meta_message_id IS NOT NULL
+        AND btrim(meta_message_id) = ''
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    WITH ranked_meta_messages AS (
+      SELECT
+        id,
+        ROW_NUMBER() OVER (PARTITION BY meta_message_id ORDER BY id) AS duplicate_rank
+      FROM messages
+      WHERE meta_message_id IS NOT NULL
+    )
+    UPDATE messages
+      SET meta_message_id = NULL
+      WHERE id IN (
+        SELECT id
+        FROM ranked_meta_messages
+        WHERE duplicate_rank > 1
+      )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_meta_message_id_unique
+      ON messages (meta_message_id)
+      WHERE meta_message_id IS NOT NULL
   `);
 }
 var authenticateJWT = async (req, res, next) => {
@@ -1347,7 +1491,7 @@ app.get("/api/conversations", authenticateJWT, async (req, res) => {
     let conditions = import_drizzle_orm2.sql`${schema_exports.conversations.whatsappNumberId} IN ${numberIds}`;
     if (status && status !== "all") {
       if (status === "unread") {
-        conditions = import_drizzle_orm2.sql`${conditions} AND ${schema_exports.conversations.status} = 'unread'`;
+        conditions = import_drizzle_orm2.sql`${conditions} AND ${schema_exports.conversations.isUnread} = true`;
       } else if (status === "human_handover") {
         conditions = import_drizzle_orm2.sql`${conditions} AND ${schema_exports.conversations.status} = 'human_handover'`;
       } else if (status === "ai_suggested") {
@@ -1369,6 +1513,7 @@ app.get("/api/conversations", authenticateJWT, async (req, res) => {
       whatsappNumberId: schema_exports.conversations.whatsappNumberId,
       assignedUserId: schema_exports.conversations.assignedUserId,
       status: schema_exports.conversations.status,
+      isUnread: schema_exports.conversations.isUnread,
       lastMessageAt: schema_exports.conversations.lastMessageAt,
       contactName: schema_exports.contacts.name,
       contactPhone: schema_exports.contacts.phoneNumber,
@@ -1398,6 +1543,7 @@ app.get("/api/conversations/:id", authenticateJWT, async (req, res) => {
       whatsappNumberId: schema_exports.conversations.whatsappNumberId,
       assignedUserId: schema_exports.conversations.assignedUserId,
       status: schema_exports.conversations.status,
+      isUnread: schema_exports.conversations.isUnread,
       lastMessageAt: schema_exports.conversations.lastMessageAt,
       whatsappNumberName: schema_exports.whatsappNumbers.displayName,
       whatsappNumberPhone: schema_exports.whatsappNumbers.phoneNumber
@@ -1424,16 +1570,48 @@ app.get("/api/conversations/:id", authenticateJWT, async (req, res) => {
 });
 app.put("/api/conversations/:id", authenticateJWT, async (req, res) => {
   const { id } = req.params;
-  const { status, assignedUserId } = req.body;
+  const { status, assignedUserId, isUnread } = req.body;
   try {
     const updates = {};
-    if (status !== void 0) updates.status = status;
-    if (assignedUserId !== void 0) updates.assignedUserId = assignedUserId;
+    if (isUnread !== void 0) {
+      updates.isUnread = Boolean(isUnread);
+    }
+    if (status !== void 0) {
+      if (status === "unread") {
+        updates.isUnread = true;
+      } else {
+        const allowedStatuses = /* @__PURE__ */ new Set([
+          "open",
+          "human_handover",
+          "ai_suggested",
+          "workflow_active",
+          "closed"
+        ]);
+        if (!allowedStatuses.has(String(status))) {
+          return res.status(400).json({ error: "Invalid conversation status." });
+        }
+        updates.status = String(status);
+        if (status === "closed") {
+          updates.isUnread = false;
+        }
+      }
+    }
+    if (assignedUserId !== void 0) {
+      updates.assignedUserId = assignedUserId;
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No conversation changes were supplied." });
+    }
     const [updated] = await db.update(schema_exports.conversations).set(updates).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, parseInt(id))).returning();
     if (!updated) {
       return res.status(404).json({ error: "Conversation not found." });
     }
-    await auditLog(req.user.id, req.user.email, "Conversation Updated", `Updated conversation ${id} (Status: ${status || "no-change"}, Assigned: ${assignedUserId || "no-change"}).`);
+    await auditLog(
+      req.user.id,
+      req.user.email,
+      "Conversation Updated",
+      `Updated conversation ${id} (Status: ${status ?? "no-change"}, Read: ${isUnread === void 0 ? "no-change" : isUnread ? "unread" : "read"}, Assigned: ${assignedUserId ?? "no-change"}).`
+    );
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1689,64 +1867,66 @@ async function runWorkflowStep(convId, numId, incomingText, contactId) {
       (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.isActive, true)
     )).limit(1);
     const textLower = incomingText.toLowerCase().trim();
-    let matchedWorkflow = null;
     if (!session) {
       const [wf2] = await db.select().from(schema_exports.workflows).where((0, import_drizzle_orm2.and)(
         (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numId),
         (0, import_drizzle_orm2.eq)(schema_exports.workflows.isActive, true),
         (0, import_drizzle_orm2.eq)(schema_exports.workflows.triggerKeyword, textLower)
       )).limit(1);
-      if (wf2) {
-        matchedWorkflow = wf2;
-        const steps2 = JSON.parse(wf2.steps);
-        const welcomeStep = steps2[0];
-        [session] = await db.insert(schema_exports.workflowSessions).values({
+      if (!wf2) {
+        return false;
+      }
+      const steps2 = JSON.parse(wf2.steps);
+      const welcomeStep = steps2[0];
+      if (!welcomeStep?.id || !welcomeStep?.questionText) {
+        throw new Error(`Workflow ${wf2.id} does not have a valid first step.`);
+      }
+      [session] = await db.insert(schema_exports.workflowSessions).values({
+        conversationId: convId,
+        workflowId: wf2.id,
+        currentStepId: welcomeStep.id,
+        capturedData: "{}",
+        isActive: true
+      }).returning();
+      try {
+        await sendWorkflowWhatsAppTextMessage({
           conversationId: convId,
-          workflowId: wf2.id,
-          currentStepId: welcomeStep.id,
-          capturedData: "{}",
-          isActive: true
-        }).returning();
-        await db.insert(schema_exports.messages).values({
-          conversationId: convId,
-          sender: "system",
-          senderName: "Workflow Engine",
+          whatsappNumberId: numId,
+          contactId,
           content: `${wf2.welcomeMessage}
 
-${welcomeStep.questionText}`,
-          messageType: "text",
-          replyType: "workflow",
-          status: "sent"
+${welcomeStep.questionText}`
         });
-        await db.update(schema_exports.conversations).set({ status: "workflow_active", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
-        return true;
+      } catch (deliveryError) {
+        await db.delete(schema_exports.workflowSessions).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
+        throw deliveryError;
       }
-      return false;
+      await db.update(schema_exports.conversations).set({ status: "workflow_active", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
+      return true;
     }
     if (textLower === "human" || textLower === "help" || textLower === "recruiter") {
-      await db.update(schema_exports.workflowSessions).set({ isActive: false }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
-      await db.insert(schema_exports.messages).values({
+      await sendWorkflowWhatsAppTextMessage({
         conversationId: convId,
-        sender: "system",
-        senderName: "Workflow Engine",
-        content: "Workflow stopped. Handing you over to a live recruiter.",
-        messageType: "text",
-        replyType: "workflow",
-        status: "sent"
+        whatsappNumberId: numId,
+        contactId,
+        content: "Workflow stopped. Handing you over to a live recruiter."
       });
+      await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
       await db.update(schema_exports.conversations).set({ status: "human_handover", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
       return true;
     }
     const [wf] = await db.select().from(schema_exports.workflows).where((0, import_drizzle_orm2.eq)(schema_exports.workflows.id, session.workflowId)).limit(1);
     if (!wf) return false;
     const steps = JSON.parse(wf.steps);
-    const currentStep = steps.find((s) => s.id === session.currentStepId);
+    const currentStep = steps.find((step) => step.id === session.currentStepId);
     if (!currentStep) return false;
     let nextStepId = currentStep.nextStepId;
     let validReply = true;
-    const capturedData = JSON.parse(session.capturedData);
+    const capturedData = JSON.parse(session.capturedData || "{}");
     if (currentStep.type === "menu") {
-      const option = currentStep.options?.find((o) => o.key === textLower);
+      const option = currentStep.options?.find(
+        (item) => String(item.key || "").toLowerCase().trim() === textLower
+      );
       if (option) {
         nextStepId = option.nextStepId;
         capturedData[currentStep.id] = option.text;
@@ -1773,53 +1953,46 @@ ${welcomeStep.questionText}`,
       }
     }
     if (!validReply) {
-      await db.insert(schema_exports.messages).values({
+      await sendWorkflowWhatsAppTextMessage({
         conversationId: convId,
-        sender: "system",
-        senderName: "Workflow Engine",
-        content: "Sorry, I didn\u2019t understand that. Please reply with one of the numbers shown above.",
-        messageType: "text",
-        replyType: "workflow",
-        status: "sent"
+        whatsappNumberId: numId,
+        contactId,
+        content: "Sorry, I didn\u2019t understand that. Please reply with one of the numbers shown above."
       });
       return true;
     }
     await db.update(schema_exports.workflowSessions).set({ capturedData: JSON.stringify(capturedData), updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
-    const nextStep = steps.find((s) => s.id === nextStepId);
+    const nextStep = steps.find((step) => step.id === nextStepId);
     if (!nextStep || nextStep.type === "end_workflow") {
       const endText = nextStep ? nextStep.questionText : "Thank you for completing the onboarding process!";
-      await db.insert(schema_exports.messages).values({
+      await sendWorkflowWhatsAppTextMessage({
         conversationId: convId,
-        sender: "system",
-        senderName: "Workflow Engine",
-        content: endText,
-        messageType: "text",
-        replyType: "workflow",
-        status: "sent"
+        whatsappNumberId: numId,
+        contactId,
+        content: endText
       });
-      await db.update(schema_exports.workflowSessions).set({ isActive: false }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
+      await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
       await db.update(schema_exports.contacts).set({ capturedAnswers: JSON.stringify(capturedData) }).where((0, import_drizzle_orm2.eq)(schema_exports.contacts.id, contactId));
       await db.update(schema_exports.conversations).set({ status: "open", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
     } else {
-      await db.update(schema_exports.workflowSessions).set({ currentStepId: nextStep.id }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
-      await db.insert(schema_exports.messages).values({
+      await sendWorkflowWhatsAppTextMessage({
         conversationId: convId,
-        sender: "system",
-        senderName: "Workflow Engine",
-        content: nextStep.questionText,
-        messageType: "text",
-        replyType: "workflow",
-        status: "sent"
+        whatsappNumberId: numId,
+        contactId,
+        content: nextStep.questionText
       });
+      await db.update(schema_exports.workflowSessions).set({ currentStepId: nextStep.id, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
       if (nextStep.type === "handover") {
         await db.update(schema_exports.conversations).set({ status: "human_handover", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
-        await db.update(schema_exports.workflowSessions).set({ isActive: false }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
+        await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
+      } else {
+        await db.update(schema_exports.conversations).set({ status: "workflow_active", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
       }
     }
     return true;
   } catch (err) {
     console.error("Workflow run error:", err);
-    return false;
+    return err instanceof WorkflowDeliveryError;
   }
 }
 app.post("/api/messages/send", authenticateJWT, async (req, res) => {
@@ -1943,7 +2116,7 @@ ${messageText}` : String(messageText);
         mediaFilename,
         mediaCaption: String(messageText) || null
       }).returning();
-      await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
+      await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open", isUnread: false }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
       await auditLog(
         req.user.id,
         req.user.email,
@@ -1965,7 +2138,7 @@ ${messageText}` : String(messageText);
         replyToMessageId: replyToMessageId || null,
         forwardedFromMessageId: forwardedFromMessageId || null
       });
-      await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date(), status: "open" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
+      await db.update(schema_exports.conversations).set({ lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
       await auditLog(
         req.user.id,
         req.user.email,
@@ -2034,6 +2207,17 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
     if (!msg) {
       return res.status(200).json({ status: "acknowledged" });
     }
+    const incomingMetaMessageId = String(msg.id || "").trim();
+    if (incomingMetaMessageId) {
+      const [existingMessage] = await db.select({ id: schema_exports.messages.id }).from(schema_exports.messages).where((0, import_drizzle_orm2.eq)(schema_exports.messages.metaMessageId, incomingMetaMessageId)).limit(1);
+      if (existingMessage) {
+        console.log(`Duplicate WhatsApp webhook acknowledged: ${incomingMetaMessageId}`);
+        return res.status(200).json({
+          status: "duplicate_acknowledged",
+          messageId: existingMessage.id
+        });
+      }
+    }
     from = normalizeWhatsAppNumber(msg.from || "");
     messageType = msg.type || "text";
     contactName = value?.contacts?.[0]?.profile?.name || "WhatsApp User";
@@ -2083,11 +2267,14 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
       [conv] = await db.insert(schema_exports.conversations).values({
         contactId: contact.id,
         whatsappNumberId: numId,
-        status: "unread",
+        status: "open",
+        isUnread: true,
         lastMessageAt: receivedAt
       }).returning();
     } else {
-      await db.update(schema_exports.conversations).set({ status: "unread", lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
+      const inboundStatus = ["human_handover", "workflow_active"].includes(conv.status) ? conv.status : "open";
+      await db.update(schema_exports.conversations).set({ status: inboundStatus, isUnread: true, lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
+      conv = { ...conv, status: inboundStatus, isUnread: true, lastMessageAt: receivedAt };
     }
     let replyToMessageId = null;
     const repliedMetaMessageId = String(msg.context?.id || "").trim();
@@ -2103,24 +2290,47 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
       messageType: ["image", "video", "audio", "document", "sticker", "location"].includes(messageType) ? messageType : text2.toLowerCase().endsWith(".pdf") || text2.toLowerCase().includes("resume") || text2.toLowerCase().includes("cv") ? "cv" : "text",
       status: "received",
       timestamp: receivedAt,
-      metaMessageId: String(msg.id || "").trim() || null,
+      metaMessageId: incomingMetaMessageId || null,
       replyToMessageId,
       replyContextMetaMessageId: repliedMetaMessageId || null,
       metaMediaId,
       mediaMimeType,
       mediaFilename,
       mediaCaption
-    }).returning();
-    const isWfHandled = await runWorkflowStep(conv.id, numId, text2, contact.id);
-    if (!isWfHandled) {
-      const [aiSettings2] = await db.select().from(schema_exports.aiSettings).where((0, import_drizzle_orm2.eq)(schema_exports.aiSettings.whatsappNumberId, numId)).limit(1);
-      if (aiSettings2 && aiSettings2.autoSuggest) {
-        await db.update(schema_exports.conversations).set({ status: "ai_suggested" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
-      }
+    }).onConflictDoNothing().returning();
+    if (!newMsg) {
+      const [existingMessage] = incomingMetaMessageId ? await db.select({ id: schema_exports.messages.id }).from(schema_exports.messages).where((0, import_drizzle_orm2.eq)(schema_exports.messages.metaMessageId, incomingMetaMessageId)).limit(1) : [];
+      console.log(`Parallel duplicate WhatsApp webhook acknowledged: ${incomingMetaMessageId || "unknown"}`);
+      return res.status(200).json({
+        status: "duplicate_acknowledged",
+        messageId: existingMessage?.id || null
+      });
     }
-    await db.update(schema_exports.conversations).set({ status: "unread", lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
     console.log(`Successfully ingested incoming message event from ${from}!`);
     res.status(200).json({ success: true, messageId: newMsg.id });
+    setImmediate(() => {
+      void (async () => {
+        try {
+          const [automationConversation] = await db.select({ status: schema_exports.conversations.status }).from(schema_exports.conversations).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id)).limit(1);
+          const automationLockedForHuman = automationConversation?.status === "human_handover";
+          const isWfHandled = automationLockedForHuman ? true : await runWorkflowStep(conv.id, numId, text2, contact.id);
+          if (!isWfHandled) {
+            const [currentConversation] = await db.select({ status: schema_exports.conversations.status }).from(schema_exports.conversations).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id)).limit(1);
+            const [aiSettings2] = await db.select().from(schema_exports.aiSettings).where((0, import_drizzle_orm2.eq)(schema_exports.aiSettings.whatsappNumberId, numId)).limit(1);
+            if (aiSettings2?.autoSuggest && currentConversation?.status !== "human_handover" && currentConversation?.status !== "workflow_active" && currentConversation?.status !== "closed") {
+              await db.update(schema_exports.conversations).set({ status: "ai_suggested" }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
+            }
+          }
+          await db.update(schema_exports.conversations).set({ isUnread: true, lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
+        } catch (automationError) {
+          console.error(
+            `Post-ingestion processing failed for message ${newMsg.id}:`,
+            automationError
+          );
+        }
+      })();
+    });
+    return;
   } catch (error) {
     console.error("Webhook ingestion failed:", error);
     res.status(500).json({ error: error.message });
@@ -2163,7 +2373,7 @@ app.get("/api/reports", authenticateJWT, async (req, res) => {
     const aiSent = allMessages.filter((m) => m.sender === "agent" && m.replyType === "ai").length;
     const workflowSent = allMessages.filter((m) => m.sender === "system" || m.replyType === "workflow").length;
     const humanHandovers = allConvs.filter((c) => c.status === "human_handover").length;
-    const unreadCount = allConvs.filter((c) => c.status === "unread").length;
+    const unreadCount = allConvs.filter((c) => c.isUnread).length;
     const closedCount = allConvs.filter((c) => c.status === "closed").length;
     res.json({
       totalInbound,
@@ -2221,7 +2431,7 @@ app.get("/api/dashboard", authenticateJWT, async (req, res) => {
       return msgDate.getDate() === today.getDate() && msgDate.getMonth() === today.getMonth() && msgDate.getFullYear() === today.getFullYear();
     }).length;
     const openCount = allConvs.filter((c) => c.status !== "closed").length;
-    const unreadCount = allConvs.filter((c) => c.status === "unread").length;
+    const unreadCount = allConvs.filter((c) => c.isUnread).length;
     const humanHandoverCount = allConvs.filter((c) => c.status === "human_handover").length;
     const aiSuggestionsPending = allConvs.filter((c) => c.status === "ai_suggested").length;
     const workflowActiveCount = allConvs.filter((c) => c.status === "workflow_active").length;

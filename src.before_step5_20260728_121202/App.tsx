@@ -318,7 +318,7 @@ export default function App() {
         }
 
         const unread = conversations.filter(
-          (conversation) => conversation.isUnread,
+          (conversation) => conversation.status === "unread",
         );
         setUnreadCount(unread.length);
 

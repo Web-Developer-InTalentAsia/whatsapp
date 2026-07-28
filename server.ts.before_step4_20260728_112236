@@ -288,137 +288,6 @@ async function sendWhatsAppTextMessage(params: {
   return data;
 }
 
-
-class WorkflowDeliveryError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "WorkflowDeliveryError";
-  }
-}
-
-async function sendWorkflowWhatsAppTextMessage(params: {
-  conversationId: number;
-  whatsappNumberId: number;
-  contactId: number;
-  content: string;
-}) {
-  const content = String(params.content || "").trim();
-  if (!content) {
-    throw new Error("Workflow message text is empty.");
-  }
-
-  const saveFailedMessage = async (reason: string) => {
-    try {
-      await db.insert(schema.messages).values({
-        conversationId: params.conversationId,
-        sender: "system",
-        senderName: "Workflow Engine",
-        content,
-        messageType: "text",
-        replyType: "workflow",
-        status: "failed",
-        timestamp: new Date(),
-      });
-    } catch (saveError) {
-      console.error(
-        `Could not save failed workflow message (${reason}):`,
-        saveError,
-      );
-    }
-  };
-
-  const [conversation] = await db
-    .select()
-    .from(schema.conversations)
-    .where(eq(schema.conversations.id, params.conversationId))
-    .limit(1);
-
-  if (!conversation) {
-    throw new Error("Workflow conversation was not found.");
-  }
-
-  if (
-    conversation.whatsappNumberId !== params.whatsappNumberId ||
-    conversation.contactId !== params.contactId
-  ) {
-    throw new Error("Workflow conversation, contact, or WhatsApp number mismatch.");
-  }
-
-  const [contact] = await db
-    .select()
-    .from(schema.contacts)
-    .where(eq(schema.contacts.id, params.contactId))
-    .limit(1);
-
-  if (!contact) {
-    throw new Error("Workflow contact was not found.");
-  }
-
-  const [whatsappNumber] = await db
-    .select()
-    .from(schema.whatsappNumbers)
-    .where(eq(schema.whatsappNumbers.id, params.whatsappNumberId))
-    .limit(1);
-
-  if (!whatsappNumber) {
-    throw new Error("Workflow WhatsApp number configuration was not found.");
-  }
-
-  if (!whatsappNumber.isActive) {
-    const message = "The configured WhatsApp number is inactive.";
-    await saveFailedMessage(message);
-    throw new WorkflowDeliveryError(message);
-  }
-
-  if (!whatsappNumber.phoneNumberId || !whatsappNumber.accessToken) {
-    const message = "Phone Number ID or Access Token is missing in WhatsApp settings.";
-    await saveFailedMessage(message);
-    throw new WorkflowDeliveryError(message);
-  }
-
-  let metaResult: any;
-  try {
-    metaResult = await sendWhatsAppTextMessage({
-      phoneNumberId: whatsappNumber.phoneNumberId,
-      accessToken: whatsappNumber.accessToken,
-      to: contact.phoneNumber,
-      body: content,
-    });
-  } catch (error: any) {
-    const message = error?.message || "Unknown Meta WhatsApp error.";
-    await saveFailedMessage(message);
-    console.error(
-      `Workflow WhatsApp send failed for conversation ${params.conversationId}: ${message}`,
-    );
-    throw new WorkflowDeliveryError(message);
-  }
-
-  const sentMetaMessageId =
-    String(metaResult?.messages?.[0]?.id || "").trim() || null;
-
-  const [savedMessage] = await db
-    .insert(schema.messages)
-    .values({
-      conversationId: params.conversationId,
-      sender: "system",
-      senderName: "Workflow Engine",
-      content,
-      messageType: "text",
-      replyType: "workflow",
-      status: "sent",
-      timestamp: new Date(),
-      metaMessageId: sentMetaMessageId,
-    })
-    .returning();
-
-  console.log(
-    `Workflow WhatsApp message sent to ${normalizeWhatsAppNumber(contact.phoneNumber)} ` +
-      `(conversation ${params.conversationId}, Meta ID ${sentMetaMessageId || "not returned"}).`,
-  );
-
-  return savedMessage;
-}
-
 type WhatsAppMediaType = "image" | "video" | "audio" | "document" | "sticker";
 
 async function uploadWhatsAppMedia(params: {
@@ -734,8 +603,7 @@ async function ensureSeedData() {
         contactId: contact2.id,
         whatsappNumberId: num1.id,
         assignedUserId: adminUser.id,
-        status: "open",
-        isUnread: true,
+        status: "unread",
         lastMessageAt: new Date(Date.now() - 5 * 60000),
       }).returning();
 
@@ -794,45 +662,6 @@ async function ensureSeedData() {
 }
 
 async function ensureMessageActionSchema() {
-  // Read/unread is separate from the conversation's business state. The old
-  // schema stored both concepts in `status`, which caused workflow and handover
-  // states to be overwritten every time a new message arrived.
-  await db.execute(sql`
-    ALTER TABLE conversations
-      ADD COLUMN IF NOT EXISTS is_unread boolean NOT NULL DEFAULT false
-  `);
-
-  await db.execute(sql`
-    ALTER TABLE conversations
-      ALTER COLUMN status SET DEFAULT 'open'
-  `);
-
-  // One-time compatibility migration for conversations created by older builds.
-  await db.execute(sql`
-    UPDATE conversations
-      SET is_unread = true,
-          status = 'open'
-      WHERE status = 'unread'
-  `);
-
-  // Recover active workflow state that may have been hidden by the old unread
-  // overwrite bug. Human handovers cannot be reconstructed safely from data.
-  await db.execute(sql`
-    UPDATE conversations AS conversation
-      SET status = 'workflow_active'
-      WHERE EXISTS (
-        SELECT 1
-        FROM workflow_sessions AS session
-        WHERE session.conversation_id = conversation.id
-          AND session.is_active = true
-      )
-  `);
-
-  await db.execute(sql`
-    CREATE INDEX IF NOT EXISTS idx_conversations_is_unread
-      ON conversations (is_unread)
-  `);
-
   await db.execute(sql`
     ALTER TABLE contacts
       ADD COLUMN IF NOT EXISTS company_name text NOT NULL DEFAULT '',
@@ -1783,7 +1612,7 @@ app.get("/api/conversations", authenticateJWT, async (req: any, res) => {
 
     if (status && status !== "all") {
       if (status === "unread") {
-        conditions = sql`${conditions} AND ${schema.conversations.isUnread} = true`;
+        conditions = sql`${conditions} AND ${schema.conversations.status} = 'unread'`;
       } else if (status === "human_handover") {
         conditions = sql`${conditions} AND ${schema.conversations.status} = 'human_handover'`;
       } else if (status === "ai_suggested") {
@@ -1809,7 +1638,6 @@ app.get("/api/conversations", authenticateJWT, async (req: any, res) => {
       whatsappNumberId: schema.conversations.whatsappNumberId,
       assignedUserId: schema.conversations.assignedUserId,
       status: schema.conversations.status,
-      isUnread: schema.conversations.isUnread,
       lastMessageAt: schema.conversations.lastMessageAt,
       contactName: schema.contacts.name,
       contactPhone: schema.contacts.phoneNumber,
@@ -1851,7 +1679,6 @@ app.get("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
       whatsappNumberId: schema.conversations.whatsappNumberId,
       assignedUserId: schema.conversations.assignedUserId,
       status: schema.conversations.status,
-      isUnread: schema.conversations.isUnread,
       lastMessageAt: schema.conversations.lastMessageAt,
       whatsappNumberName: schema.whatsappNumbers.displayName,
       whatsappNumberPhone: schema.whatsappNumbers.phoneNumber,
@@ -1889,46 +1716,11 @@ app.get("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
 // Update conversation details (e.g. status, assign user)
 app.put("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
   const { id } = req.params;
-  const { status, assignedUserId, isUnread } = req.body;
+  const { status, assignedUserId } = req.body;
   try {
     const updates: any = {};
-
-    if (isUnread !== undefined) {
-      updates.isUnread = Boolean(isUnread);
-    }
-
-    if (status !== undefined) {
-      // `unread` is accepted only for compatibility with old clients. It now
-      // changes the read flag without destroying workflow/handover state.
-      if (status === "unread") {
-        updates.isUnread = true;
-      } else {
-        const allowedStatuses = new Set([
-          "open",
-          "human_handover",
-          "ai_suggested",
-          "workflow_active",
-          "closed",
-        ]);
-
-        if (!allowedStatuses.has(String(status))) {
-          return res.status(400).json({ error: "Invalid conversation status." });
-        }
-
-        updates.status = String(status);
-        if (status === "closed") {
-          updates.isUnread = false;
-        }
-      }
-    }
-
-    if (assignedUserId !== undefined) {
-      updates.assignedUserId = assignedUserId;
-    }
-
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: "No conversation changes were supplied." });
-    }
+    if (status !== undefined) updates.status = status;
+    if (assignedUserId !== undefined) updates.assignedUserId = assignedUserId;
 
     const [updated] = await db.update(schema.conversations)
       .set(updates)
@@ -1939,12 +1731,7 @@ app.put("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
       return res.status(404).json({ error: "Conversation not found." });
     }
 
-    await auditLog(
-      req.user.id,
-      req.user.email,
-      "Conversation Updated",
-      `Updated conversation ${id} (Status: ${status ?? "no-change"}, Read: ${isUnread === undefined ? "no-change" : (isUnread ? "unread" : "read")}, Assigned: ${assignedUserId ?? "no-change"}).`,
-    );
+    await auditLog(req.user.id, req.user.email, "Conversation Updated", `Updated conversation ${id} (Status: ${status || 'no-change'}, Assigned: ${assignedUserId || 'no-change'}).`);
     res.json(updated);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -2252,6 +2039,7 @@ async function runWorkflowStep(convId: number, numId: number, incomingText: stri
 
     // 2. Fetch workflow trigger match
     const textLower = incomingText.toLowerCase().trim();
+    let matchedWorkflow = null;
 
     if (!session) {
       // See if trigger keyword was matched
@@ -2261,60 +2049,57 @@ async function runWorkflowStep(convId: number, numId: number, incomingText: stri
           eq(schema.workflows.isActive, true),
           eq(schema.workflows.triggerKeyword, textLower)
         )).limit(1);
-
-      if (!wf) {
-        return false;
-      }
-
-      const steps = JSON.parse(wf.steps) as any[];
-      const welcomeStep = steps[0];
-      if (!welcomeStep?.id || !welcomeStep?.questionText) {
-        throw new Error(`Workflow ${wf.id} does not have a valid first step.`);
-      }
-
-      // Create the workflow session first. If Meta delivery fails, remove this
-      // new session so the same keyword can be retried safely.
-      [session] = await db.insert(schema.workflowSessions).values({
-        conversationId: convId,
-        workflowId: wf.id,
-        currentStepId: welcomeStep.id,
-        capturedData: "{}",
-        isActive: true,
-      }).returning();
-
-      try {
-        await sendWorkflowWhatsAppTextMessage({
+      
+      if (wf) {
+        matchedWorkflow = wf;
+        // Start a new session
+        const steps = JSON.parse(wf.steps);
+        const welcomeStep = steps[0];
+        
+        [session] = await db.insert(schema.workflowSessions).values({
           conversationId: convId,
-          whatsappNumberId: numId,
-          contactId,
+          workflowId: wf.id,
+          currentStepId: welcomeStep.id,
+          capturedData: "{}",
+          isActive: true,
+        }).returning();
+
+        // Send welcome/menu message
+        await db.insert(schema.messages).values({
+          conversationId: convId,
+          sender: "system",
+          senderName: "Workflow Engine",
           content: `${wf.welcomeMessage}\n\n${welcomeStep.questionText}`,
+          messageType: "text",
+          replyType: "workflow",
+          status: "sent",
         });
-      } catch (deliveryError) {
-        await db.delete(schema.workflowSessions)
-          .where(eq(schema.workflowSessions.id, session.id));
-        throw deliveryError;
+
+        // Set conversation status
+        await db.update(schema.conversations)
+          .set({ status: "workflow_active", lastMessageAt: new Date() })
+          .where(eq(schema.conversations.id, convId));
+
+        return true;
       }
-
-      await db.update(schema.conversations)
-        .set({ status: "workflow_active", lastMessageAt: new Date() })
-        .where(eq(schema.conversations.id, convId));
-
-      return true;
+      return false; // No workflow triggered
     }
 
     // If session is active and user asks for human handover or help
     if (textLower === "human" || textLower === "help" || textLower === "recruiter") {
-      // Only stop the workflow after the handover confirmation is delivered.
-      await sendWorkflowWhatsAppTextMessage({
-        conversationId: convId,
-        whatsappNumberId: numId,
-        contactId,
-        content: "Workflow stopped. Handing you over to a live recruiter.",
-      });
-
       await db.update(schema.workflowSessions)
-        .set({ isActive: false, updatedAt: new Date() })
+        .set({ isActive: false })
         .where(eq(schema.workflowSessions.id, session.id));
+
+      await db.insert(schema.messages).values({
+        conversationId: convId,
+        sender: "system",
+        senderName: "Workflow Engine",
+        content: "Workflow stopped. Handing you over to a live recruiter.",
+        messageType: "text",
+        replyType: "workflow",
+        status: "sent",
+      });
 
       await db.update(schema.conversations)
         .set({ status: "human_handover", lastMessageAt: new Date() })
@@ -2324,24 +2109,20 @@ async function runWorkflowStep(convId: number, numId: number, incomingText: stri
     }
 
     // Get workflow steps
-    const [wf] = await db.select().from(schema.workflows)
-      .where(eq(schema.workflows.id, session.workflowId))
-      .limit(1);
+    const [wf] = await db.select().from(schema.workflows).where(eq(schema.workflows.id, session.workflowId)).limit(1);
     if (!wf) return false;
 
     const steps = JSON.parse(wf.steps) as any[];
-    const currentStep = steps.find((step) => step.id === session.currentStepId);
+    const currentStep = steps.find(s => s.id === session.currentStepId);
     if (!currentStep) return false;
 
     let nextStepId = currentStep.nextStepId;
     let validReply = true;
-    const capturedData = JSON.parse(session.capturedData || "{}");
+    const capturedData = JSON.parse(session.capturedData);
 
     if (currentStep.type === "menu") {
       // Match option key
-      const option = currentStep.options?.find(
-        (item: any) => String(item.key || "").toLowerCase().trim() === textLower,
-      );
+      const option = currentStep.options?.find((o: any) => o.key === textLower);
       if (option) {
         nextStepId = option.nextStepId;
         capturedData[currentStep.id] = option.text;
@@ -2352,6 +2133,7 @@ async function runWorkflowStep(convId: number, numId: number, incomingText: stri
       // Capture free text
       capturedData[currentStep.id] = incomingText;
       if (currentStep.variableName) {
+        // Save direct field to contact profile!
         const varName = currentStep.variableName;
         const validFields = [
           "cvField", "linkedinField", "interestedJobRole", "expectedSalary",
@@ -2366,39 +2148,44 @@ async function runWorkflowStep(convId: number, numId: number, incomingText: stri
     }
 
     if (!validReply) {
-      // Keep the current workflow step unchanged when the reply is invalid.
-      await sendWorkflowWhatsAppTextMessage({
+      // Send invalid reply message
+      await db.insert(schema.messages).values({
         conversationId: convId,
-        whatsappNumberId: numId,
-        contactId,
+        sender: "system",
+        senderName: "Workflow Engine",
         content: "Sorry, I didn’t understand that. Please reply with one of the numbers shown above.",
+        messageType: "text",
+        replyType: "workflow",
+        status: "sent",
       });
       return true;
     }
 
-    // Save the answer. The workflow step itself is advanced only after the
-    // next WhatsApp message has been delivered successfully.
+    // Update Session Captured Data
     await db.update(schema.workflowSessions)
       .set({ capturedData: JSON.stringify(capturedData), updatedAt: new Date() })
       .where(eq(schema.workflowSessions.id, session.id));
 
-    const nextStep = steps.find((step) => step.id === nextStepId);
+    // Get next step
+    const nextStep = steps.find(s => s.id === nextStepId);
     if (!nextStep || nextStep.type === "end_workflow") {
-      const endText = nextStep
-        ? nextStep.questionText
-        : "Thank you for completing the onboarding process!";
-
-      await sendWorkflowWhatsAppTextMessage({
+      // Send end message & deactivate session
+      const endText = nextStep ? nextStep.questionText : "Thank you for completing the onboarding process!";
+      await db.insert(schema.messages).values({
         conversationId: convId,
-        whatsappNumberId: numId,
-        contactId,
+        sender: "system",
+        senderName: "Workflow Engine",
         content: endText,
+        messageType: "text",
+        replyType: "workflow",
+        status: "sent",
       });
 
       await db.update(schema.workflowSessions)
-        .set({ isActive: false, updatedAt: new Date() })
+        .set({ isActive: false })
         .where(eq(schema.workflowSessions.id, session.id));
 
+      // Update captured answers on contact profile as well
       await db.update(schema.contacts)
         .set({ capturedAnswers: JSON.stringify(capturedData) })
         .where(eq(schema.contacts.id, contactId));
@@ -2407,40 +2194,37 @@ async function runWorkflowStep(convId: number, numId: number, incomingText: stri
         .set({ status: "open", lastMessageAt: new Date() })
         .where(eq(schema.conversations.id, convId));
     } else {
-      // Deliver the next question first. A failed Meta send must not silently
-      // move the user to a step that they never received.
-      await sendWorkflowWhatsAppTextMessage({
-        conversationId: convId,
-        whatsappNumberId: numId,
-        contactId,
-        content: nextStep.questionText,
-      });
-
+      // Update session current step ID and send next question
       await db.update(schema.workflowSessions)
-        .set({ currentStepId: nextStep.id, updatedAt: new Date() })
+        .set({ currentStepId: nextStep.id })
         .where(eq(schema.workflowSessions.id, session.id));
 
+      await db.insert(schema.messages).values({
+        conversationId: convId,
+        sender: "system",
+        senderName: "Workflow Engine",
+        content: nextStep.questionText,
+        messageType: "text",
+        replyType: "workflow",
+        status: "sent",
+      });
+
       if (nextStep.type === "handover") {
+        // Human handover step
         await db.update(schema.conversations)
           .set({ status: "human_handover", lastMessageAt: new Date() })
           .where(eq(schema.conversations.id, convId));
 
         await db.update(schema.workflowSessions)
-          .set({ isActive: false, updatedAt: new Date() })
+          .set({ isActive: false })
           .where(eq(schema.workflowSessions.id, session.id));
-      } else {
-        await db.update(schema.conversations)
-          .set({ status: "workflow_active", lastMessageAt: new Date() })
-          .where(eq(schema.conversations.id, convId));
       }
     }
 
     return true;
   } catch (err) {
     console.error("Workflow run error:", err);
-    // A matched workflow with a failed outbound delivery must not fall through
-    // to AI suggestions or another automated response for the same inbound message.
-    return err instanceof WorkflowDeliveryError;
+    return false;
   }
 }
 
@@ -2604,7 +2388,7 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
       // 7. Update conversation
       await db
         .update(schema.conversations)
-        .set({ lastMessageAt: new Date(), status: "open", isUnread: false })
+        .set({ lastMessageAt: new Date(), status: "open" })
         .where(eq(schema.conversations.id, convId));
 
       await auditLog(
@@ -2632,7 +2416,7 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
 
       await db
         .update(schema.conversations)
-        .set({ lastMessageAt: new Date() })
+        .set({ lastMessageAt: new Date(), status: "open" })
         .where(eq(schema.conversations.id, convId));
 
       await auditLog(
@@ -2823,22 +2607,14 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
       [conv] = await db.insert(schema.conversations).values({
         contactId: contact.id,
         whatsappNumberId: numId,
-        status: "open",
-        isUnread: true,
+        status: "unread",
         lastMessageAt: receivedAt,
       }).returning();
     } else {
-      // A new inbound message is unread, but it must not destroy an active
-      // workflow or human-handover state. Closed/stale AI conversations reopen.
-      const inboundStatus = ["human_handover", "workflow_active"].includes(conv.status)
-        ? conv.status
-        : "open";
-
+      // Set status as unread and update timestamp
       await db.update(schema.conversations)
-        .set({ status: inboundStatus, isUnread: true, lastMessageAt: receivedAt })
+        .set({ status: "unread", lastMessageAt: receivedAt })
         .where(eq(schema.conversations.id, conv.id));
-
-      conv = { ...conv, status: inboundStatus, isUnread: true, lastMessageAt: receivedAt };
     }
 
     let replyToMessageId: number | null = null;
@@ -2901,51 +2677,28 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
     setImmediate(() => {
       void (async () => {
         try {
-          // 4. Trigger Workflow Engine Check. Once a conversation has been
-          // handed to a recruiter, no workflow or AI automation may take it back.
-          const [automationConversation] = await db
-            .select({ status: schema.conversations.status })
-            .from(schema.conversations)
-            .where(eq(schema.conversations.id, conv.id))
-            .limit(1);
+          // 4. Trigger Workflow Engine Check
+          const isWfHandled = await runWorkflowStep(conv.id, numId, text, contact.id);
 
-          const automationLockedForHuman =
-            automationConversation?.status === "human_handover";
-          const isWfHandled = automationLockedForHuman
-            ? true
-            : await runWorkflowStep(conv.id, numId, text, contact.id);
-
-          // 5. Trigger suggestion status updates if no workflow is active. A
-          // human handover always has priority over AI suggestion state.
+          // 5. Trigger suggestion status updates if no workflow is active
           if (!isWfHandled) {
-            const [currentConversation] = await db
-              .select({ status: schema.conversations.status })
-              .from(schema.conversations)
-              .where(eq(schema.conversations.id, conv.id))
-              .limit(1);
-
             const [aiSettings] = await db
               .select()
               .from(schema.aiSettings)
               .where(eq(schema.aiSettings.whatsappNumberId, numId))
               .limit(1);
 
-            if (
-              aiSettings?.autoSuggest &&
-              currentConversation?.status !== "human_handover" &&
-              currentConversation?.status !== "workflow_active" &&
-              currentConversation?.status !== "closed"
-            ) {
+            if (aiSettings && aiSettings.autoSuggest) {
               await db.update(schema.conversations)
                 .set({ status: "ai_suggested" })
                 .where(eq(schema.conversations.id, conv.id));
             }
           }
 
-          // Read state is independent from workflow/AI/handover state. Keep the
-          // new inbound message unread until a recruiter views the thread.
+          // An inbound message must remain visibly unread after workflow/AI
+          // processing until a recruiter opens the thread.
           await db.update(schema.conversations)
-            .set({ isUnread: true, lastMessageAt: receivedAt })
+            .set({ status: "unread", lastMessageAt: receivedAt })
             .where(eq(schema.conversations.id, conv.id));
         } catch (automationError) {
           console.error(
@@ -3010,7 +2763,7 @@ app.get("/api/reports", authenticateJWT, async (req: any, res) => {
     const workflowSent = allMessages.filter(m => m.sender === "system" || m.replyType === "workflow").length;
 
     const humanHandovers = allConvs.filter(c => c.status === "human_handover").length;
-    const unreadCount = allConvs.filter(c => c.isUnread).length;
+    const unreadCount = allConvs.filter(c => c.status === "unread").length;
     const closedCount = allConvs.filter(c => c.status === "closed").length;
 
     // Standard reporting format
@@ -3081,7 +2834,7 @@ app.get("/api/dashboard", authenticateJWT, async (req, res) => {
     }).length;
 
     const openCount = allConvs.filter(c => c.status !== "closed").length;
-    const unreadCount = allConvs.filter(c => c.isUnread).length;
+    const unreadCount = allConvs.filter(c => c.status === "unread").length;
     const humanHandoverCount = allConvs.filter(c => c.status === "human_handover").length;
     const aiSuggestionsPending = allConvs.filter(c => c.status === "ai_suggested").length;
     const workflowActiveCount = allConvs.filter(c => c.status === "workflow_active").length;
