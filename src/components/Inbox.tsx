@@ -93,6 +93,8 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   // AI suggestions state
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestionError, setSuggestionError] = useState("");
+  const [suggestionSourceSummary, setSuggestionSourceSummary] = useState("");
 
   // Users for assignment selection
   const [allUsers, setAllUsers] = useState<any[]>([]);
@@ -262,6 +264,8 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     setSelectedConversation(conv);
     setMessages([]);
     setSuggestions([]);
+    setSuggestionError("");
+    setSuggestionSourceSummary("");
     setContact(null);
     setReplyText("");
 
@@ -304,21 +308,52 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     }
   };
 
-  // Fetch AI suggestions
+  // Fetch grounded AI suggestions. The backend deliberately returns an
+  // actionable error instead of fabricated demo replies when Gemini or the
+  // approved knowledge base is not ready.
   const fetchAISuggestions = async () => {
     if (!selectedConversation) return;
     setLoadingSuggestions(true);
     setSuggestions([]);
+    setSuggestionError("");
+    setSuggestionSourceSummary("");
+
     try {
       const response = await fetch(`/api/conversations/${selectedConversation.id}/ai-suggestions`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      if (response.ok) {
-        const data = await response.json();
-        setSuggestions(data);
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setSuggestionError(data.error || "Verified AI suggestions could not be generated.");
+        return;
+      }
+
+      const generatedSuggestions = Array.isArray(data)
+        ? data
+        : Array.isArray(data.suggestions)
+          ? data.suggestions
+          : [];
+
+      if (generatedSuggestions.length === 0) {
+        setSuggestionError("Gemini returned no verified suggestions. Please reply manually or regenerate.");
+        return;
+      }
+
+      setSuggestions(generatedSuggestions);
+
+      if (data.sources) {
+        const sourceParts = [
+          data.sources.knowledgeBase ? "Knowledge Base" : "",
+          data.sources.faqs ? `${data.sources.faqs} FAQ${data.sources.faqs === 1 ? "" : "s"}` : "",
+          data.sources.rules ? `${data.sources.rules} rule${data.sources.rules === 1 ? "" : "s"}` : "",
+          data.sources.approvedReplies ? `${data.sources.approvedReplies} approved repl${data.sources.approvedReplies === 1 ? "y" : "ies"}` : "",
+        ].filter(Boolean);
+        setSuggestionSourceSummary(sourceParts.join(" • "));
       }
     } catch (err) {
       console.error(err);
+      setSuggestionError("The AI service could not be reached. No fallback suggestion was shown.");
     } finally {
       setLoadingSuggestions(false);
     }
@@ -497,6 +532,8 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       setAttachment(null);
       setReplyingTo(null);
       setSuggestions([]); // Clear suggestions upon reply
+      setSuggestionError("");
+      setSuggestionSourceSummary("");
 
       // Reload conversation list
       fetchConversations(selectedConversation.id);
@@ -639,7 +676,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     if (!selectedConversation) return;
     try {
       const type = isApproved ? "approved_reply" : "rejected_reply";
-      await fetch("/api/ai-suggestions/train", {
+      const response = await fetch("/api/ai-suggestions/train", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -652,7 +689,16 @@ export default function Inbox({ token, currentUser }: InboxProps) {
           answer: text
         })
       });
-      alert(isApproved ? "Suggestion marked as good. AI will prioritize similar replies!" : "Suggestion marked as bad.");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(data.error || "Unable to save AI feedback.");
+        return;
+      }
+      alert(
+        isApproved
+          ? "Approved. This reply can be used as a trusted example for future suggestions."
+          : "Rejected. This reply is stored as feedback and excluded from trusted knowledge.",
+      );
     } catch (err) {
       console.error(err);
     }
@@ -1033,7 +1079,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   <div className="flex items-center gap-2">
                     <Sparkles className="h-4.5 w-4.5 text-emerald-400 animate-pulse" />
                     <h4 className="text-xs font-bold text-emerald-300 tracking-tight uppercase">
-                      AI Generated Recruiting Suggestions
+                      Grounded AI Reply Suggestions
                     </h4>
                   </div>
                   {suggestions.length === 0 ? (
@@ -1057,6 +1103,22 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   )}
                 </div>
 
+                <div className="flex items-start gap-2 rounded-lg border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 text-[10px] text-emerald-300">
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                  <span>Only approved Knowledge Base, FAQ, rules, approved replies, contact profile, and conversation context are used. Unsupported facts are blocked.</span>
+                </div>
+
+                {suggestionError && (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-900/60 bg-amber-950/25 px-3 py-2 text-[11px] text-amber-300">
+                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <span>{suggestionError}</span>
+                  </div>
+                )}
+
+                {suggestionSourceSummary && suggestions.length > 0 && (
+                  <div className="text-[10px] text-zinc-500">Grounded sources: {suggestionSourceSummary}</div>
+                )}
+
                 {suggestions.length > 0 && (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     {suggestions.map((sug, idx) => (
@@ -1071,14 +1133,14 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                             <button
                               onClick={() => handleTrainAI(sug, true)}
                               className="p-1 hover:bg-zinc-800 text-zinc-500 hover:text-emerald-400 rounded transition cursor-pointer"
-                              title="Mark suggestion as Good reply (Trains AI)"
+                              title="Approve this reply as a future grounded example"
                             >
                               <ThumbsUp className="h-3 w-3" />
                             </button>
                             <button
                               onClick={() => handleTrainAI(sug, false)}
                               className="p-1 hover:bg-rose-950/30 text-zinc-500 hover:text-rose-400 rounded transition cursor-pointer"
-                              title="Mark suggestion as Bad reply"
+                              title="Reject this reply; it will not be used as trusted knowledge"
                             >
                               <ThumbsDown className="h-3 w-3" />
                             </button>

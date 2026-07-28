@@ -940,13 +940,19 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                 </div>
               </div>
 
-              {/* Quick provider alert */}
-              <div className="bg-emerald-950/30 border border-emerald-900/50 rounded-xl p-4 flex gap-3 text-xs text-emerald-400">
-                <Shield className="h-5 w-5 text-emerald-500 shrink-0" />
+              {/* Grounded provider status */}
+              <div className={`rounded-xl p-4 flex gap-3 text-xs border ${
+                aiSettings.apiConfigured
+                  ? "bg-emerald-950/30 border-emerald-900/50 text-emerald-400"
+                  : "bg-amber-950/25 border-amber-900/60 text-amber-300"
+              }`}>
+                <Shield className={`h-5 w-5 shrink-0 ${aiSettings.apiConfigured ? "text-emerald-500" : "text-amber-400"}`} />
                 <div className="space-y-1">
-                  <span className="font-bold block text-emerald-350">Official Server-Side Gemini Integration</span>
+                  <span className="font-bold block">
+                    {aiSettings.apiConfigured ? "Gemini Connected — Grounded Mode" : "Gemini API Key Not Connected"}
+                  </span>
                   <p className="leading-relaxed">
-                    AI suggestions are computed in the secure backend container using <code className="font-semibold text-emerald-300 font-mono">gemini-3.5-flash</code>. Access keys are stored as encrypted environment secrets. Never expose tokens to clients.
+                    Suggestions use only the saved Company Knowledge Base, approved FAQ/rules, approved reply examples, contact profile, and conversation context. If approved knowledge or Gemini is unavailable, the Inbox shows an error instead of a demo reply.
                   </p>
                 </div>
               </div>
@@ -1016,13 +1022,13 @@ export default function Settings({ token, currentUser }: SettingsProps) {
 
                 {/* Knowledge Base */}
                 <div className="md:col-span-2">
-                  <label className="text-xs font-semibold text-zinc-400 block mb-1">Company Knowledge Base</label>
+                  <label className="text-xs font-semibold text-zinc-400 block mb-1">Approved Company Knowledge Base</label>
                   <textarea
                     rows={4}
                     value={aiSettings.companyKnowledgeBase}
                     onChange={(e) => setAiSettings({ ...aiSettings, companyKnowledgeBase: e.target.value })}
                     className="w-full border border-zinc-800 rounded-xl p-3 bg-[#09090b] text-xs text-zinc-100 leading-relaxed focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
-                    placeholder="Write details about InTalent's business, specific clients, job roles, interview dates, recruitment rules, benefits, vacation policies..."
+                    placeholder="Add only confirmed company facts, official links, contact details, application instructions, and approved policies. Do not add guesses or temporary information."
                   />
                 </div>
               </div>
@@ -1041,8 +1047,8 @@ export default function Settings({ token, currentUser }: SettingsProps) {
               {/* FAQ & Training database */}
               <div className="space-y-4 pt-2">
                 <div>
-                  <h4 className="font-bold text-zinc-200 text-sm">InTalent AI Training Base</h4>
-                  <p className="text-[11px] text-zinc-500 mt-0.5">Train the AI with questions & answers to refine its reply precision.</p>
+                  <h4 className="font-bold text-zinc-200 text-sm">Approved AI Knowledge & Feedback</h4>
+                  <p className="text-[11px] text-zinc-500 mt-0.5">FAQ, rules, and approved replies can ground future suggestions. Rejected replies are stored as feedback and are excluded from trusted knowledge.</p>
                 </div>
 
                 {/* Add Training FAQ form */}
@@ -1065,7 +1071,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                         type="text"
                         value={newTraining.question}
                         onChange={(e) => setNewTraining({ ...newTraining, question: e.target.value })}
-                        placeholder="e.g. Do you allow remote work?"
+                        placeholder="e.g. Where can a candidate submit a CV?"
                         className="w-full border border-zinc-800 rounded-lg p-2 bg-[#0c0c0e] text-zinc-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
                       />
                     </div>
@@ -1075,7 +1081,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                         type="text"
                         value={newTraining.answer}
                         onChange={(e) => setNewTraining({ ...newTraining, answer: e.target.value })}
-                        placeholder="e.g. Yes! We offer hybrid/remote options depending on client."
+                        placeholder="e.g. Please email your CV to cv@intalent.asia and mention the job title in the subject line."
                         className="w-full border border-zinc-800 rounded-lg p-2 bg-[#0c0c0e] text-zinc-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
                       />
                     </div>
@@ -1084,14 +1090,14 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                     onClick={handleAddTrainingItem}
                     className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition text-xs cursor-pointer"
                   >
-                    Add Training Rule
+                    Add Approved Item
                   </button>
                 </div>
 
                 {/* Training rules list */}
                 <div className="divide-y divide-zinc-800 max-h-64 overflow-y-auto border border-zinc-800 rounded-xl p-3 bg-[#09090b]">
                   {trainingData.length === 0 ? (
-                    <div className="text-center py-6 text-xs text-zinc-500">No training items/FAQ added yet. Add some rules above to train the Gemini engine.</div>
+                    <div className="text-center py-6 text-xs text-zinc-500">No approved FAQ or rules added yet. Add confirmed information above before generating suggestions.</div>
                   ) : (
                     trainingData.map((item) => (
                       <div key={item.id} className="py-3 flex items-start justify-between gap-4 text-xs">
