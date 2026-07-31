@@ -161,8 +161,18 @@ var messages = (0, import_pg_core.pgTable)("messages", {
   replyType: (0, import_pg_core.text)("reply_type").notNull().default("none"),
   // 'manual' | 'ai' | 'workflow' | 'none'
   status: (0, import_pg_core.text)("status").notNull().default("received"),
-  // 'sent' | 'received' | 'failed'
+  // 'sent' | 'delivered' | 'read' | 'received' | 'failed'
   timestamp: (0, import_pg_core.timestamp)("timestamp").defaultNow(),
+  statusUpdatedAt: (0, import_pg_core.timestamp)("status_updated_at"),
+  deliveredAt: (0, import_pg_core.timestamp)("delivered_at"),
+  readAt: (0, import_pg_core.timestamp)("read_at"),
+  failedAt: (0, import_pg_core.timestamp)("failed_at"),
+  failureCode: (0, import_pg_core.text)("failure_code"),
+  failureTitle: (0, import_pg_core.text)("failure_title"),
+  failureDetails: (0, import_pg_core.text)("failure_details"),
+  retryCount: (0, import_pg_core.integer)("retry_count").notNull().default(0),
+  lastRetryAt: (0, import_pg_core.timestamp)("last_retry_at"),
+  retryOfMessageId: (0, import_pg_core.integer)("retry_of_message_id"),
   agentId: (0, import_pg_core.integer)("agent_id").references(() => users.id, { onDelete: "set null" }),
   replyToMessageId: (0, import_pg_core.integer)("reply_to_message_id"),
   forwardedFromMessageId: (0, import_pg_core.integer)("forwarded_from_message_id"),

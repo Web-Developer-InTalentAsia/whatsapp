@@ -59,6 +59,26 @@ function MessageMedia({ message, token }: { message: Message; token: string }) {
   );
 }
 
+function getDeliveryStatusLabel(message: Message) {
+  if (message.status === "read") return "Read";
+  if (message.status === "delivered") return "Delivered";
+  if (message.status === "sent") return "Sent";
+  if (message.status === "failed") return "Failed";
+  return message.status;
+}
+
+function getDeliveryStatusTitle(message: Message) {
+  const label = getDeliveryStatusLabel(message);
+  const timestamp =
+    message.readAt ||
+    message.deliveredAt ||
+    message.failedAt ||
+    message.statusUpdatedAt ||
+    message.timestamp;
+  const detail = message.failureDetails ? `: ${message.failureDetails}` : "";
+  return `${label}${timestamp ? ` at ${new Date(timestamp).toLocaleString()}` : ""}${detail}`;
+}
+
 export default function Inbox({ token, currentUser }: InboxProps) {
   // States
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -74,6 +94,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const [loadingList, setLoadingList] = useState(true);
   const [loadingChat, setLoadingChat] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
+  const [retryingMessageId, setRetryingMessageId] = useState<number | null>(null);
   const [resumingAutomation, setResumingAutomation] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
@@ -235,10 +256,10 @@ export default function Inbox({ token, currentUser }: InboxProps) {
         if (stopped) return;
         setMessages(previous => {
           const previousSignature = previous.map(message =>
-            `${message.id}:${message.isStarred}:${message.isPinned}:${message.replyToMessageId || ""}`
+            `${message.id}:${message.isStarred}:${message.isPinned}:${message.replyToMessageId || ""}:${message.status}:${message.statusUpdatedAt || ""}:${message.retryCount || 0}:${message.failureCode || ""}`
           ).join("|");
           const updatedSignature = updatedMessages.map(message =>
-            `${message.id}:${message.isStarred}:${message.isPinned}:${message.replyToMessageId || ""}`
+            `${message.id}:${message.isStarred}:${message.isPinned}:${message.replyToMessageId || ""}:${message.status}:${message.statusUpdatedAt || ""}:${message.retryCount || 0}:${message.failureCode || ""}`
           ).join("|");
           return previousSignature === updatedSignature ? previous : updatedMessages;
         });
@@ -542,6 +563,56 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       console.error("Send error:", err);
     } finally {
       setSendingReply(false);
+    }
+  };
+
+  const handleRetryMessage = async (message: Message) => {
+    if (message.status !== "failed" || retryingMessageId !== null) return;
+
+    const confirmed = window.confirm(
+      "Retry this failed WhatsApp message? A new message record will be created if Meta accepts the retry.",
+    );
+    if (!confirmed) return;
+
+    setRetryingMessageId(message.id);
+    try {
+      const response = await fetch(`/api/messages/${message.id}/retry`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        alert(data.error || "Could not retry the message.");
+        setMessages(previous => previous.map(item =>
+          item.id === message.id
+            ? {
+                ...item,
+                retryCount: data.retryCount ?? item.retryCount,
+                failureDetails: data.error || item.failureDetails,
+              }
+            : item,
+        ));
+        return;
+      }
+
+      setMessages(previous => {
+        const updatedSource = previous.map(item =>
+          item.id === data.sourceMessageId
+            ? { ...item, retryCount: data.sourceRetryCount, lastRetryAt: new Date().toISOString() }
+            : item,
+        );
+        return data.message ? [...updatedSource, data.message] : updatedSource;
+      });
+
+      if (selectedConversation) {
+        await fetchConversations(selectedConversation.id);
+      }
+    } catch (error) {
+      console.error("Retry error:", error);
+      alert("Could not retry the message.");
+    } finally {
+      setRetryingMessageId(null);
     }
   };
 
@@ -1027,10 +1098,53 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                       className={`flex ${isContact ? "justify-start" : isSystem ? "justify-center" : "justify-end"}`}
                     >
                       {isSystem ? (
-                        <div className="bg-zinc-900 text-zinc-400 text-[11px] px-3 py-1.5 rounded-xl max-w-md border border-zinc-800 text-center shadow-md flex items-center gap-1.5 font-sans">
-                          <CheckCircle2 className="h-3.5 w-3.5 text-zinc-500" />
-                          <div>
-                            <span className="font-semibold text-zinc-300">{m.senderName}:</span> {m.content}
+                        <div className="bg-zinc-900 text-zinc-400 text-[11px] px-3 py-2 rounded-xl max-w-md border border-zinc-800 shadow-md font-sans space-y-2">
+                          <div className="flex items-start justify-center gap-1.5 text-center">
+                            <CheckCircle2 className="h-3.5 w-3.5 text-zinc-500 mt-0.5 shrink-0" />
+                            <div>
+                              <span className="font-semibold text-zinc-300">{m.senderName}:</span> {m.content}
+                            </div>
+                          </div>
+
+                          {m.retryOfMessageId && (
+                            <div className="text-[9px] uppercase tracking-wide text-zinc-500 text-center">
+                              Retry of failed message #{m.retryOfMessageId}
+                            </div>
+                          )}
+
+                          {m.status === "failed" && (m.failureTitle || m.failureDetails) && (
+                            <div className="rounded-lg border border-red-900/70 bg-red-950/40 px-2 py-1.5 text-left text-red-200">
+                              <div className="font-semibold">{m.failureTitle || "WhatsApp delivery failed"}</div>
+                              {m.failureDetails && <div className="mt-0.5 text-[10px] text-red-300">{m.failureDetails}</div>}
+                              {m.failureCode && <div className="mt-0.5 text-[9px] text-red-400">Code: {m.failureCode}</div>}
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-center gap-2 border-t border-zinc-800 pt-1.5" title={getDeliveryStatusTitle(m)}>
+                            <span className={`flex items-center gap-1 font-semibold ${m.status === "failed" ? "text-red-400" : m.status === "read" ? "text-sky-400" : "text-zinc-500"}`}>
+                              {m.status === "failed" ? (
+                                <AlertCircle className="h-3 w-3" />
+                              ) : m.status === "sent" ? (
+                                <Check className="h-3 w-3" />
+                              ) : (
+                                <CheckCircle2 className="h-3 w-3" />
+                              )}
+                              {getDeliveryStatusLabel(m)}
+                            </span>
+                            <span className="text-zinc-600">
+                              {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            {m.status === "failed" && m.messageType === "text" && (
+                              <button
+                                type="button"
+                                onClick={() => void handleRetryMessage(m)}
+                                disabled={retryingMessageId !== null}
+                                className="inline-flex items-center gap-1 rounded-md border border-red-800 px-2 py-0.5 text-[9px] font-semibold text-red-300 hover:bg-red-950 disabled:opacity-50"
+                              >
+                                <RefreshCw className={`h-3 w-3 ${retryingMessageId === m.id ? "animate-spin" : ""}`} />
+                                {retryingMessageId === m.id ? "Retrying" : "Retry"}
+                              </button>
+                            )}
                           </div>
                         </div>
                       ) : (
@@ -1109,8 +1223,25 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                           ) : (
                             <p className="text-sm leading-relaxed whitespace-pre-wrap pr-3">{m.content}</p>
                           )}
+
+                          {m.retryOfMessageId && (
+                            <div className={`mt-2 text-[9px] uppercase tracking-wide ${isContact ? "text-zinc-600" : "text-emerald-200"}`}>
+                              Retry of failed message #{m.retryOfMessageId}
+                            </div>
+                          )}
+
+                          {!isContact && m.status === "failed" && (m.failureTitle || m.failureDetails) && (
+                            <div className="mt-2 rounded-lg border border-red-900/70 bg-red-950/45 px-2.5 py-2 text-red-100">
+                              <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+                                <AlertCircle className="h-3.5 w-3.5" />
+                                {m.failureTitle || "WhatsApp delivery failed"}
+                              </div>
+                              {m.failureDetails && <div className="mt-1 text-[10px] text-red-200">{m.failureDetails}</div>}
+                              {m.failureCode && <div className="mt-1 text-[9px] text-red-300">Code: {m.failureCode}</div>}
+                            </div>
+                          )}
                           
-                          {/* Micro indicator of replies */}
+                          {/* Time, delivery state, and reply type */}
                           <div className="flex items-center justify-between gap-4 mt-2">
                             <div className="flex items-center gap-1.5">
                               {m.isPinned && <Pin className={`h-3 w-3 ${isContact ? "text-zinc-500" : "text-emerald-200"}`} />}
@@ -1120,10 +1251,46 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                               </span>
                             </div>
                             
-                            {!isContact && m.replyType && m.replyType !== "none" && (
-                              <span className="text-[9px] bg-emerald-750 text-emerald-100 font-bold px-2 py-0.5 rounded uppercase tracking-wider">
-                                {m.replyType === "handover" ? "handover notice" : `${m.replyType} reply`}
-                              </span>
+                            {!isContact && (
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold ${
+                                    m.status === "failed"
+                                      ? "bg-red-950/70 text-red-200"
+                                      : m.status === "read"
+                                        ? "bg-sky-950/60 text-sky-200"
+                                        : "bg-emerald-800/70 text-emerald-100"
+                                  }`}
+                                  title={getDeliveryStatusTitle(m)}
+                                >
+                                  {m.status === "failed" ? (
+                                    <AlertCircle className="h-3 w-3" />
+                                  ) : m.status === "sent" ? (
+                                    <Check className="h-3 w-3" />
+                                  ) : (
+                                    <CheckCircle2 className="h-3 w-3" />
+                                  )}
+                                  {getDeliveryStatusLabel(m)}
+                                </span>
+
+                                {m.status === "failed" && m.messageType === "text" && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRetryMessage(m)}
+                                    disabled={retryingMessageId !== null}
+                                    className="inline-flex items-center gap-1 rounded border border-red-300/50 px-1.5 py-0.5 text-[9px] font-semibold text-red-50 hover:bg-red-950/40 disabled:opacity-50"
+                                  >
+                                    <RefreshCw className={`h-3 w-3 ${retryingMessageId === m.id ? "animate-spin" : ""}`} />
+                                    {retryingMessageId === m.id ? "Retrying" : "Retry"}
+                                  </button>
+                                )}
+
+                                {m.replyType && m.replyType !== "none" && (
+                                  <span className="text-[9px] bg-emerald-750 text-emerald-100 font-bold px-2 py-0.5 rounded uppercase tracking-wider">
+                                    {m.replyType === "handover" ? "handover notice" : `${m.replyType} reply`}
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </div>
                         </div>

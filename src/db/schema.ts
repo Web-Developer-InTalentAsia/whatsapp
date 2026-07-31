@@ -91,8 +91,18 @@ export const messages = pgTable('messages', {
   content: text('content').notNull(),
   messageType: text('message_type').notNull().default('text'), // 'text' | 'document' | 'cv' | 'location'
   replyType: text('reply_type').notNull().default('none'), // 'manual' | 'ai' | 'workflow' | 'none'
-  status: text('status').notNull().default('received'), // 'sent' | 'received' | 'failed'
+  status: text('status').notNull().default('received'), // 'sent' | 'delivered' | 'read' | 'received' | 'failed'
   timestamp: timestamp('timestamp').defaultNow(),
+  statusUpdatedAt: timestamp('status_updated_at'),
+  deliveredAt: timestamp('delivered_at'),
+  readAt: timestamp('read_at'),
+  failedAt: timestamp('failed_at'),
+  failureCode: text('failure_code'),
+  failureTitle: text('failure_title'),
+  failureDetails: text('failure_details'),
+  retryCount: integer('retry_count').notNull().default(0),
+  lastRetryAt: timestamp('last_retry_at'),
+  retryOfMessageId: integer('retry_of_message_id'),
   agentId: integer('agent_id').references(() => users.id, { onDelete: 'set null' }),
   replyToMessageId: integer('reply_to_message_id'),
   forwardedFromMessageId: integer('forwarded_from_message_id'),
