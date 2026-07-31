@@ -79,7 +79,6 @@ export const conversations = pgTable('conversations', {
   status: text('status').notNull().default('open'), // 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed'
   isUnread: boolean('is_unread').notNull().default(false),
   lastMessageAt: timestamp('last_message_at').defaultNow(),
-  lastInboundAt: timestamp('last_inbound_at'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 

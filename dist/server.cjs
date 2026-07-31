@@ -147,6 +147,7 @@ var conversations = (0, import_pg_core.pgTable)("conversations", {
   // 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed'
   isUnread: (0, import_pg_core.boolean)("is_unread").notNull().default(false),
   lastMessageAt: (0, import_pg_core.timestamp)("last_message_at").defaultNow(),
+  lastInboundAt: (0, import_pg_core.timestamp)("last_inbound_at"),
   createdAt: (0, import_pg_core.timestamp)("created_at").defaultNow()
 });
 var messages = (0, import_pg_core.pgTable)("messages", {
@@ -414,6 +415,7 @@ app.get("/api/health", (req, res) => {
     host: req.get("host") || null,
     protocol: req.protocol,
     forwardedProto: req.get("x-forwarded-proto") || null,
+    whatsappServiceWindowHours: WHATSAPP_SERVICE_WINDOW_HOURS,
     time: (/* @__PURE__ */ new Date()).toISOString()
   });
 });
@@ -430,6 +432,59 @@ if (process.env.GEMINI_API_KEY) {
 }
 var META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 var META_API_TIMEOUT_MS = Number(process.env.META_API_TIMEOUT_MS || 15e3);
+var configuredMessageRetryMaxAttempts = Number(process.env.MESSAGE_RETRY_MAX_ATTEMPTS || 3);
+var MESSAGE_RETRY_MAX_ATTEMPTS = Number.isFinite(configuredMessageRetryMaxAttempts) ? Math.min(10, Math.max(1, Math.floor(configuredMessageRetryMaxAttempts))) : 3;
+var configuredMessageRetryInterval = Number(process.env.MESSAGE_RETRY_MIN_INTERVAL_SECONDS || 10);
+var MESSAGE_RETRY_MIN_INTERVAL_SECONDS = Number.isFinite(configuredMessageRetryInterval) ? Math.min(300, Math.max(1, Math.floor(configuredMessageRetryInterval))) : 10;
+var configuredServiceWindowHours = Number(process.env.WHATSAPP_SERVICE_WINDOW_HOURS || 24);
+var WHATSAPP_SERVICE_WINDOW_HOURS = Number.isFinite(configuredServiceWindowHours) ? Math.min(168, Math.max(1, configuredServiceWindowHours)) : 24;
+var WHATSAPP_SERVICE_WINDOW_MS = WHATSAPP_SERVICE_WINDOW_HOURS * 60 * 60 * 1e3;
+function getWhatsAppServiceWindowState(value) {
+  if (!value) {
+    return {
+      isOpen: false,
+      lastInboundAt: null,
+      expiresAt: null,
+      remainingSeconds: 0
+    };
+  }
+  const lastInboundAt = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(lastInboundAt.getTime())) {
+    return {
+      isOpen: false,
+      lastInboundAt: null,
+      expiresAt: null,
+      remainingSeconds: 0
+    };
+  }
+  const expiresAt = new Date(lastInboundAt.getTime() + WHATSAPP_SERVICE_WINDOW_MS);
+  const remainingMs = expiresAt.getTime() - Date.now();
+  return {
+    isOpen: remainingMs > 0,
+    lastInboundAt,
+    expiresAt,
+    remainingSeconds: Math.max(0, Math.ceil(remainingMs / 1e3))
+  };
+}
+function withServiceWindowFields(conversation) {
+  const windowState = getWhatsAppServiceWindowState(conversation.lastInboundAt);
+  return {
+    ...conversation,
+    serviceWindowOpen: windowState.isOpen,
+    serviceWindowExpiresAt: windowState.expiresAt?.toISOString() || null,
+    serviceWindowRemainingSeconds: windowState.remainingSeconds
+  };
+}
+function getClosedServiceWindowResponse(state) {
+  return {
+    error: "The WhatsApp 24-hour customer service window is closed. A free-form message cannot be sent. Use an approved Meta template, or wait for the contact to send a new message.",
+    code: "WHATSAPP_SERVICE_WINDOW_CLOSED",
+    serviceWindowOpen: false,
+    lastInboundAt: state.lastInboundAt?.toISOString() || null,
+    serviceWindowExpiresAt: state.expiresAt?.toISOString() || null,
+    serviceWindowHours: WHATSAPP_SERVICE_WINDOW_HOURS
+  };
+}
 var MetaApiError = class extends Error {
   constructor(message, status, data) {
     super(message);
@@ -578,7 +633,11 @@ async function hasRecentSentAIReply(conversationId) {
   const [latestAIReply] = await db.select({ timestamp: schema_exports.messages.timestamp }).from(schema_exports.messages).where((0, import_drizzle_orm2.and)(
     (0, import_drizzle_orm2.eq)(schema_exports.messages.conversationId, conversationId),
     (0, import_drizzle_orm2.eq)(schema_exports.messages.replyType, "ai"),
-    (0, import_drizzle_orm2.eq)(schema_exports.messages.status, "sent")
+    (0, import_drizzle_orm2.or)(
+      (0, import_drizzle_orm2.eq)(schema_exports.messages.status, "sent"),
+      (0, import_drizzle_orm2.eq)(schema_exports.messages.status, "delivered"),
+      (0, import_drizzle_orm2.eq)(schema_exports.messages.status, "read")
+    )
   )).orderBy((0, import_drizzle_orm2.desc)(schema_exports.messages.id)).limit(1);
   if (!latestAIReply?.timestamp) return false;
   const ageMilliseconds = Date.now() - new Date(latestAIReply.timestamp).getTime();
@@ -587,7 +646,9 @@ async function hasRecentSentAIReply(conversationId) {
 async function sendAutomatedAIWhatsAppText(params) {
   const content = normalizeAIText(params.content, AI_AUTO_REPLY_MAX_LENGTH);
   if (!content) throw new Error("Automated AI reply text is empty.");
-  const saveFailedMessage = async () => {
+  const saveFailedMessage = async (error) => {
+    const failedAt = /* @__PURE__ */ new Date();
+    const failure = getThrownDeliveryFailure(error);
     try {
       await db.insert(schema_exports.messages).values({
         conversationId: params.conversationId,
@@ -597,7 +658,12 @@ async function sendAutomatedAIWhatsAppText(params) {
         messageType: "text",
         replyType: params.replyType || "ai",
         status: "failed",
-        timestamp: /* @__PURE__ */ new Date(),
+        timestamp: failedAt,
+        statusUpdatedAt: failedAt,
+        failedAt,
+        failureCode: failure.code,
+        failureTitle: failure.title,
+        failureDetails: failure.details,
         replyContextMetaMessageId: params.replyToMetaMessageId || null
       });
     } catch (saveError) {
@@ -605,12 +671,14 @@ async function sendAutomatedAIWhatsAppText(params) {
     }
   };
   if (!params.whatsappNumber.isActive) {
-    await saveFailedMessage();
-    throw new AIAutoReplyDeliveryError("The configured WhatsApp number is inactive.");
+    const error = new AIAutoReplyDeliveryError("The configured WhatsApp number is inactive.");
+    await saveFailedMessage(error);
+    throw error;
   }
   if (!params.whatsappNumber.phoneNumberId || !params.whatsappNumber.accessToken) {
-    await saveFailedMessage();
-    throw new AIAutoReplyDeliveryError("Phone Number ID or Access Token is missing in WhatsApp settings.");
+    const error = new AIAutoReplyDeliveryError("Phone Number ID or Access Token is missing in WhatsApp settings.");
+    await saveFailedMessage(error);
+    throw error;
   }
   try {
     const metaResult = await sendWhatsAppTextMessage({
@@ -630,6 +698,7 @@ async function sendAutomatedAIWhatsAppText(params) {
       replyType: params.replyType || "ai",
       status: "sent",
       timestamp: /* @__PURE__ */ new Date(),
+      statusUpdatedAt: /* @__PURE__ */ new Date(),
       metaMessageId: sentMetaMessageId,
       replyContextMetaMessageId: params.replyToMetaMessageId || null
     }).returning();
@@ -639,7 +708,7 @@ async function sendAutomatedAIWhatsAppText(params) {
     );
     return savedMessage;
   } catch (error) {
-    await saveFailedMessage();
+    await saveFailedMessage(error);
     await db.update(schema_exports.conversations).set({ status: "human_handover", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, params.conversationId));
     throw new AIAutoReplyDeliveryError(
       error instanceof Error ? error.message : "Unknown Meta WhatsApp delivery error."
@@ -1029,6 +1098,104 @@ async function sendWhatsAppTextMessage(params) {
   }
   return data;
 }
+var META_SUCCESS_STATUS_RANK = {
+  sent: 1,
+  delivered: 2,
+  read: 3
+};
+function parseMetaEventTimestamp(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? new Date(seconds * 1e3) : /* @__PURE__ */ new Date();
+}
+function getMetaStatusFailure(statusEvent) {
+  const error = Array.isArray(statusEvent?.errors) ? statusEvent.errors[0] : null;
+  const code = error?.code !== void 0 && error?.code !== null ? String(error.code) : null;
+  const title = String(error?.title || error?.message || "WhatsApp delivery failed").trim();
+  const details = String(
+    error?.error_data?.details || error?.error_data?.messaging_product || error?.message || title
+  ).trim();
+  return {
+    code,
+    title: title || "WhatsApp delivery failed",
+    details: details || "Meta did not provide additional delivery details."
+  };
+}
+function getThrownDeliveryFailure(error) {
+  return {
+    code: error instanceof MetaApiError && error.code !== void 0 ? String(error.code) : null,
+    title: error instanceof MetaApiError ? String(error.type || "Meta API send failed") : "WhatsApp send failed",
+    details: String(error?.message || "Unknown WhatsApp send error.")
+  };
+}
+function shouldApplyMetaDeliveryStatus(currentStatus, incomingStatus) {
+  const current = String(currentStatus || "").toLowerCase();
+  if (incomingStatus === "failed") {
+    return !["delivered", "read"].includes(current);
+  }
+  if (current === "failed") return true;
+  const currentRank = META_SUCCESS_STATUS_RANK[current] || 0;
+  const incomingRank = META_SUCCESS_STATUS_RANK[incomingStatus] || 0;
+  return incomingRank >= currentRank;
+}
+async function processMetaDeliveryStatusEvents(params) {
+  let updated = 0;
+  let ignored = 0;
+  let unknown = 0;
+  for (const statusEvent of params.statuses) {
+    const metaMessageId = String(statusEvent?.id || "").trim();
+    const incomingStatus = String(statusEvent?.status || "").trim().toLowerCase();
+    if (!metaMessageId || !["sent", "delivered", "read", "failed"].includes(incomingStatus)) {
+      ignored += 1;
+      continue;
+    }
+    const [message] = await db.select().from(schema_exports.messages).where((0, import_drizzle_orm2.eq)(schema_exports.messages.metaMessageId, metaMessageId)).limit(1);
+    if (!message) {
+      unknown += 1;
+      console.warn(
+        `WhatsApp status event referenced unknown Meta message ${metaMessageId} (number ${params.whatsappNumberId}, status ${incomingStatus}).`
+      );
+      continue;
+    }
+    if (!shouldApplyMetaDeliveryStatus(message.status, incomingStatus)) {
+      ignored += 1;
+      continue;
+    }
+    const occurredAt = parseMetaEventTimestamp(statusEvent?.timestamp);
+    const updates = {
+      status: incomingStatus,
+      statusUpdatedAt: occurredAt
+    };
+    if (incomingStatus === "delivered") {
+      updates.deliveredAt = message.deliveredAt || occurredAt;
+      updates.failureCode = null;
+      updates.failureTitle = null;
+      updates.failureDetails = null;
+      updates.failedAt = null;
+    } else if (incomingStatus === "read") {
+      updates.deliveredAt = message.deliveredAt || occurredAt;
+      updates.readAt = message.readAt || occurredAt;
+      updates.failureCode = null;
+      updates.failureTitle = null;
+      updates.failureDetails = null;
+      updates.failedAt = null;
+    } else if (incomingStatus === "failed") {
+      const failure = getMetaStatusFailure(statusEvent);
+      updates.failedAt = occurredAt;
+      updates.failureCode = failure.code;
+      updates.failureTitle = failure.title;
+      updates.failureDetails = failure.details;
+      await auditLog(
+        null,
+        null,
+        "WhatsApp Delivery Failed",
+        `Meta message ${metaMessageId} failed: ${failure.code || "no-code"} - ${failure.details}`
+      );
+    }
+    await db.update(schema_exports.messages).set(updates).where((0, import_drizzle_orm2.eq)(schema_exports.messages.id, message.id));
+    updated += 1;
+  }
+  return { updated, ignored, unknown };
+}
 var WorkflowDeliveryError = class extends Error {
   constructor(message) {
     super(message);
@@ -1040,7 +1207,9 @@ async function sendWorkflowWhatsAppTextMessage(params) {
   if (!content) {
     throw new Error("Workflow message text is empty.");
   }
-  const saveFailedMessage = async (reason) => {
+  const saveFailedMessage = async (reason, error) => {
+    const failedAt = /* @__PURE__ */ new Date();
+    const failure = getThrownDeliveryFailure(error || new Error(reason));
     try {
       await db.insert(schema_exports.messages).values({
         conversationId: params.conversationId,
@@ -1050,7 +1219,12 @@ async function sendWorkflowWhatsAppTextMessage(params) {
         messageType: "text",
         replyType: "workflow",
         status: "failed",
-        timestamp: /* @__PURE__ */ new Date()
+        timestamp: failedAt,
+        statusUpdatedAt: failedAt,
+        failedAt,
+        failureCode: failure.code,
+        failureTitle: failure.title,
+        failureDetails: failure.details
       });
     } catch (saveError) {
       console.error(
@@ -1094,7 +1268,7 @@ async function sendWorkflowWhatsAppTextMessage(params) {
     });
   } catch (error) {
     const message = error?.message || "Unknown Meta WhatsApp error.";
-    await saveFailedMessage(message);
+    await saveFailedMessage(message, error);
     console.error(
       `Workflow WhatsApp send failed for conversation ${params.conversationId}: ${message}`
     );
@@ -1110,6 +1284,7 @@ async function sendWorkflowWhatsAppTextMessage(params) {
     replyType: "workflow",
     status: "sent",
     timestamp: /* @__PURE__ */ new Date(),
+    statusUpdatedAt: /* @__PURE__ */ new Date(),
     metaMessageId: sentMetaMessageId
   }).returning();
   console.log(
@@ -1184,11 +1359,31 @@ async function ensureSeedData() {
 async function ensureMessageActionSchema() {
   await db.execute(import_drizzle_orm2.sql`
     ALTER TABLE conversations
-      ADD COLUMN IF NOT EXISTS is_unread boolean NOT NULL DEFAULT false
+      ADD COLUMN IF NOT EXISTS is_unread boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS last_inbound_at timestamp
   `);
   await db.execute(import_drizzle_orm2.sql`
     ALTER TABLE conversations
       ALTER COLUMN status SET DEFAULT 'open'
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    UPDATE conversations AS conversation
+      SET last_inbound_at = latest.latest_inbound_at
+      FROM (
+        SELECT conversation_id, MAX(timestamp) AS latest_inbound_at
+        FROM messages
+        WHERE sender = 'contact'
+        GROUP BY conversation_id
+      ) AS latest
+      WHERE conversation.id = latest.conversation_id
+        AND (
+          conversation.last_inbound_at IS NULL
+          OR conversation.last_inbound_at < latest.latest_inbound_at
+        )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_conversations_last_inbound_at
+      ON conversations (last_inbound_at DESC)
   `);
   await db.execute(import_drizzle_orm2.sql`
     UPDATE conversations
@@ -1231,7 +1426,26 @@ async function ensureMessageActionSchema() {
       ADD COLUMN IF NOT EXISTS meta_media_id text,
       ADD COLUMN IF NOT EXISTS media_mime_type text,
       ADD COLUMN IF NOT EXISTS media_filename text,
-      ADD COLUMN IF NOT EXISTS media_caption text
+      ADD COLUMN IF NOT EXISTS media_caption text,
+      ADD COLUMN IF NOT EXISTS status_updated_at timestamp,
+      ADD COLUMN IF NOT EXISTS delivered_at timestamp,
+      ADD COLUMN IF NOT EXISTS read_at timestamp,
+      ADD COLUMN IF NOT EXISTS failed_at timestamp,
+      ADD COLUMN IF NOT EXISTS failure_code text,
+      ADD COLUMN IF NOT EXISTS failure_title text,
+      ADD COLUMN IF NOT EXISTS failure_details text,
+      ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS last_retry_at timestamp,
+      ADD COLUMN IF NOT EXISTS retry_of_message_id integer
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    UPDATE messages
+      SET status_updated_at = COALESCE(status_updated_at, timestamp)
+      WHERE status_updated_at IS NULL
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_messages_delivery_status
+      ON messages (status, status_updated_at DESC)
   `);
   await db.execute(import_drizzle_orm2.sql`
     CREATE TABLE IF NOT EXISTS message_user_states (
@@ -1977,6 +2191,7 @@ app.get("/api/conversations", authenticateJWT, async (req, res) => {
       status: schema_exports.conversations.status,
       isUnread: schema_exports.conversations.isUnread,
       lastMessageAt: schema_exports.conversations.lastMessageAt,
+      lastInboundAt: schema_exports.conversations.lastInboundAt,
       contactName: schema_exports.contacts.name,
       contactPhone: schema_exports.contacts.phoneNumber,
       contactTags: schema_exports.contacts.tags,
@@ -1991,7 +2206,7 @@ app.get("/api/conversations", authenticateJWT, async (req, res) => {
         (c) => c.contactName && c.contactName.toLowerCase().includes(q) || c.contactPhone.includes(q) || c.contactTags && c.contactTags.toLowerCase().includes(q)
       );
     }
-    res.json(filtered);
+    res.json(filtered.map((conversation) => withServiceWindowFields(conversation)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2007,6 +2222,7 @@ app.get("/api/conversations/:id", authenticateJWT, async (req, res) => {
       status: schema_exports.conversations.status,
       isUnread: schema_exports.conversations.isUnread,
       lastMessageAt: schema_exports.conversations.lastMessageAt,
+      lastInboundAt: schema_exports.conversations.lastInboundAt,
       whatsappNumberName: schema_exports.whatsappNumbers.displayName,
       whatsappNumberPhone: schema_exports.whatsappNumbers.phoneNumber
     }).from(schema_exports.conversations).innerJoin(schema_exports.whatsappNumbers, (0, import_drizzle_orm2.eq)(schema_exports.conversations.whatsappNumberId, schema_exports.whatsappNumbers.id)).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, parseInt(id))).limit(1);
@@ -2021,7 +2237,7 @@ app.get("/api/conversations/:id", authenticateJWT, async (req, res) => {
     }
     res.json({
       conversation: {
-        ...conv,
+        ...withServiceWindowFields(conv),
         assignedUserName: assignedName
       },
       contact
@@ -2699,6 +2915,16 @@ app.post("/api/messages/send", authenticateJWT, async (req, res) => {
     if (conv.whatsappNumberId !== waNumberId) {
       return res.status(400).json({ error: "WhatsApp number mismatch for this conversation." });
     }
+    const serviceWindow = getWhatsAppServiceWindowState(conv.lastInboundAt);
+    if (!serviceWindow.isOpen) {
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Free-form Message Blocked",
+        `Blocked free-form WhatsApp send for conversation ${convId}; the ${WHATSAPP_SERVICE_WINDOW_HOURS}-hour service window is closed.`
+      );
+      return res.status(409).json(getClosedServiceWindowResponse(serviceWindow));
+    }
     const [contact] = await db.select().from(schema_exports.contacts).where((0, import_drizzle_orm2.eq)(schema_exports.contacts.id, conv.contactId)).limit(1);
     if (!contact) {
       return res.status(404).json({ error: "Contact not found for this conversation." });
@@ -2785,6 +3011,7 @@ ${messageText}` : String(messageText);
         status: "sent",
         agentId: req.user.id,
         timestamp: /* @__PURE__ */ new Date(),
+        statusUpdatedAt: /* @__PURE__ */ new Date(),
         replyToMessageId: replyToMessageId || null,
         forwardedFromMessageId: forwardedFromMessageId || null,
         metaMessageId: sentMetaMessageId,
@@ -2820,6 +3047,8 @@ ${messageText}` : String(messageText);
       );
       return res.json(newMsg);
     } catch (metaError) {
+      const failedAt = /* @__PURE__ */ new Date();
+      const failure = getThrownDeliveryFailure(metaError);
       await db.insert(schema_exports.messages).values({
         conversationId: convId,
         sender: "agent",
@@ -2829,7 +3058,12 @@ ${messageText}` : String(messageText);
         replyType: replyType || "manual",
         status: "failed",
         agentId: req.user.id,
-        timestamp: /* @__PURE__ */ new Date(),
+        timestamp: failedAt,
+        statusUpdatedAt: failedAt,
+        failedAt,
+        failureCode: failure.code,
+        failureTitle: failure.title,
+        failureDetails: failure.details,
         replyToMessageId: replyToMessageId || null,
         forwardedFromMessageId: forwardedFromMessageId || null
       });
@@ -2845,6 +3079,146 @@ ${messageText}` : String(messageText);
   } catch (error) {
     console.error("Send message error:", error);
     res.status(500).json({ error: error.message });
+  }
+});
+app.post("/api/messages/:id/retry", authenticateJWT, async (req, res) => {
+  const messageId = Number(req.params.id);
+  if (!Number.isInteger(messageId)) {
+    return res.status(400).json({ error: "Invalid message ID." });
+  }
+  try {
+    const [failedMessage] = await db.select().from(schema_exports.messages).where((0, import_drizzle_orm2.eq)(schema_exports.messages.id, messageId)).limit(1);
+    if (!failedMessage) {
+      return res.status(404).json({ error: "Message not found." });
+    }
+    if (failedMessage.sender === "contact") {
+      return res.status(400).json({ error: "Inbound contact messages cannot be retried." });
+    }
+    if (failedMessage.status !== "failed") {
+      return res.status(400).json({ error: "Only failed outgoing messages can be retried." });
+    }
+    if (failedMessage.messageType !== "text") {
+      return res.status(400).json({
+        error: "Attachments cannot be retried automatically. Please attach the file again and send a new message."
+      });
+    }
+    const currentRetryCount = Number(failedMessage.retryCount || 0);
+    if (currentRetryCount >= MESSAGE_RETRY_MAX_ATTEMPTS) {
+      return res.status(429).json({
+        error: `Maximum retry limit (${MESSAGE_RETRY_MAX_ATTEMPTS}) reached. Send a fresh message after checking the Meta configuration.`
+      });
+    }
+    if (failedMessage.lastRetryAt) {
+      const retryAgeMs = Date.now() - new Date(failedMessage.lastRetryAt).getTime();
+      const minimumMs = MESSAGE_RETRY_MIN_INTERVAL_SECONDS * 1e3;
+      if (retryAgeMs >= 0 && retryAgeMs < minimumMs) {
+        return res.status(429).json({
+          error: `Please wait ${Math.ceil((minimumMs - retryAgeMs) / 1e3)} seconds before retrying again.`
+        });
+      }
+    }
+    const [conversation] = await db.select().from(schema_exports.conversations).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, failedMessage.conversationId)).limit(1);
+    if (!conversation) return res.status(404).json({ error: "Conversation not found." });
+    const serviceWindow = getWhatsAppServiceWindowState(conversation.lastInboundAt);
+    if (!serviceWindow.isOpen) {
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Message Retry Blocked",
+        `Blocked retry for message ${failedMessage.id}; conversation ${conversation.id} is outside the WhatsApp service window.`
+      );
+      return res.status(409).json({
+        ...getClosedServiceWindowResponse(serviceWindow),
+        retryCount: Number(failedMessage.retryCount || 0),
+        maxRetries: MESSAGE_RETRY_MAX_ATTEMPTS
+      });
+    }
+    const [contact] = await db.select().from(schema_exports.contacts).where((0, import_drizzle_orm2.eq)(schema_exports.contacts.id, conversation.contactId)).limit(1);
+    if (!contact) return res.status(404).json({ error: "Contact not found." });
+    const [whatsappNumber] = await db.select().from(schema_exports.whatsappNumbers).where((0, import_drizzle_orm2.eq)(schema_exports.whatsappNumbers.id, conversation.whatsappNumberId)).limit(1);
+    if (!whatsappNumber) {
+      return res.status(404).json({ error: "WhatsApp number configuration not found." });
+    }
+    if (!whatsappNumber.isActive) {
+      return res.status(400).json({ error: "This WhatsApp number is inactive." });
+    }
+    if (!whatsappNumber.phoneNumberId || !whatsappNumber.accessToken) {
+      return res.status(400).json({ error: "Phone Number ID or Access Token is missing." });
+    }
+    let replyToMetaMessageId = failedMessage.replyContextMetaMessageId || null;
+    if (!replyToMetaMessageId && failedMessage.replyToMessageId) {
+      const [repliedMessage] = await db.select({ metaMessageId: schema_exports.messages.metaMessageId }).from(schema_exports.messages).where((0, import_drizzle_orm2.eq)(schema_exports.messages.id, failedMessage.replyToMessageId)).limit(1);
+      replyToMetaMessageId = repliedMessage?.metaMessageId || null;
+    }
+    const retryAt = /* @__PURE__ */ new Date();
+    const nextRetryCount = currentRetryCount + 1;
+    try {
+      const metaResult = await sendWhatsAppTextMessage({
+        phoneNumberId: whatsappNumber.phoneNumberId,
+        accessToken: whatsappNumber.accessToken,
+        to: contact.phoneNumber,
+        body: failedMessage.content,
+        replyToMetaMessageId
+      });
+      const sentMetaMessageId = String(metaResult?.messages?.[0]?.id || "").trim() || null;
+      const [retriedMessage] = await db.insert(schema_exports.messages).values({
+        conversationId: failedMessage.conversationId,
+        sender: failedMessage.sender,
+        senderName: failedMessage.senderName,
+        content: failedMessage.content,
+        messageType: "text",
+        replyType: failedMessage.replyType,
+        status: "sent",
+        timestamp: retryAt,
+        statusUpdatedAt: retryAt,
+        agentId: failedMessage.agentId || (failedMessage.sender === "agent" ? req.user.id : null),
+        replyToMessageId: failedMessage.replyToMessageId || null,
+        forwardedFromMessageId: failedMessage.forwardedFromMessageId || null,
+        metaMessageId: sentMetaMessageId,
+        replyContextMetaMessageId: replyToMetaMessageId,
+        retryOfMessageId: failedMessage.id
+      }).returning();
+      await db.update(schema_exports.messages).set({ retryCount: nextRetryCount, lastRetryAt: retryAt }).where((0, import_drizzle_orm2.eq)(schema_exports.messages.id, failedMessage.id));
+      await db.update(schema_exports.conversations).set({ lastMessageAt: retryAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conversation.id));
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Message Retried",
+        `Retried failed message ${failedMessage.id} as message ${retriedMessage.id} (Meta ID: ${sentMetaMessageId || "not returned"}).`
+      );
+      return res.json({
+        success: true,
+        message: retriedMessage,
+        sourceMessageId: failedMessage.id,
+        sourceRetryCount: nextRetryCount
+      });
+    } catch (retryError) {
+      const failure = getThrownDeliveryFailure(retryError);
+      await db.update(schema_exports.messages).set({
+        retryCount: nextRetryCount,
+        lastRetryAt: retryAt,
+        statusUpdatedAt: retryAt,
+        failedAt: retryAt,
+        failureCode: failure.code,
+        failureTitle: failure.title,
+        failureDetails: failure.details
+      }).where((0, import_drizzle_orm2.eq)(schema_exports.messages.id, failedMessage.id));
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Message Retry Failed",
+        `Retry ${nextRetryCount} failed for message ${failedMessage.id}: ${failure.details}`
+      );
+      const routeError = getMetaRouteError(retryError);
+      return res.status(routeError.status).json({
+        ...routeError.body,
+        retryCount: nextRetryCount,
+        maxRetries: MESSAGE_RETRY_MAX_ATTEMPTS
+      });
+    }
+  } catch (error) {
+    console.error("Retry message error:", error);
+    return res.status(500).json({ error: error.message || "Could not retry message." });
   }
 });
 async function processInboundAutomation(params) {
@@ -3037,9 +3411,20 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
     let mediaFilename = null;
     let mediaCaption = null;
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+    const statusEvents = Array.isArray(value?.statuses) ? value.statuses : [];
+    let deliveryStatusSummary = null;
+    if (statusEvents.length > 0) {
+      deliveryStatusSummary = await processMetaDeliveryStatusEvents({
+        whatsappNumberId: numId,
+        statuses: statusEvents
+      });
+    }
     const msg = value?.messages?.[0];
     if (!msg) {
-      return res.status(200).json({ status: "acknowledged" });
+      return res.status(200).json({
+        status: "delivery_status_acknowledged",
+        ...deliveryStatusSummary || { updated: 0, ignored: 0, unknown: 0 }
+      });
     }
     const incomingMetaMessageId = String(msg.id || "").trim();
     if (incomingMetaMessageId) {
@@ -3103,12 +3488,24 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
         whatsappNumberId: numId,
         status: "open",
         isUnread: true,
-        lastMessageAt: receivedAt
+        lastMessageAt: receivedAt,
+        lastInboundAt: receivedAt
       }).returning();
     } else {
       const inboundStatus = ["human_handover", "workflow_active"].includes(conv.status) ? conv.status : "open";
-      await db.update(schema_exports.conversations).set({ status: inboundStatus, isUnread: true, lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
-      conv = { ...conv, status: inboundStatus, isUnread: true, lastMessageAt: receivedAt };
+      await db.update(schema_exports.conversations).set({
+        status: inboundStatus,
+        isUnread: true,
+        lastMessageAt: receivedAt,
+        lastInboundAt: receivedAt
+      }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
+      conv = {
+        ...conv,
+        status: inboundStatus,
+        isUnread: true,
+        lastMessageAt: receivedAt,
+        lastInboundAt: receivedAt
+      };
     }
     let replyToMessageId = null;
     const repliedMetaMessageId = String(msg.context?.id || "").trim();

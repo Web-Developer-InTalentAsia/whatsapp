@@ -64,10 +64,6 @@ export interface Conversation {
   status: 'open' | 'human_handover' | 'ai_suggested' | 'workflow_active' | 'closed';
   isUnread: boolean;
   lastMessageAt: string;
-  lastInboundAt?: string | null;
-  serviceWindowOpen?: boolean;
-  serviceWindowExpiresAt?: string | null;
-  serviceWindowRemainingSeconds?: number;
   createdAt?: string;
   contact?: Contact;
 }

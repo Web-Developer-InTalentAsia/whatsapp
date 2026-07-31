@@ -56,7 +56,6 @@ app.get("/api/health", (req, res) => {
     host: req.get("host") || null,
     protocol: req.protocol,
     forwardedProto: req.get("x-forwarded-proto") || null,
-    whatsappServiceWindowHours: WHATSAPP_SERVICE_WINDOW_HOURS,
     time: new Date().toISOString(),
   });
 });
@@ -78,79 +77,6 @@ if (process.env.GEMINI_API_KEY) {
 // --- META WHATSAPP CLOUD API HELPERS ---
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_API_TIMEOUT_MS = Number(process.env.META_API_TIMEOUT_MS || 15000);
-const configuredMessageRetryMaxAttempts = Number(process.env.MESSAGE_RETRY_MAX_ATTEMPTS || 3);
-const MESSAGE_RETRY_MAX_ATTEMPTS = Number.isFinite(configuredMessageRetryMaxAttempts)
-  ? Math.min(10, Math.max(1, Math.floor(configuredMessageRetryMaxAttempts)))
-  : 3;
-const configuredMessageRetryInterval = Number(process.env.MESSAGE_RETRY_MIN_INTERVAL_SECONDS || 10);
-const MESSAGE_RETRY_MIN_INTERVAL_SECONDS = Number.isFinite(configuredMessageRetryInterval)
-  ? Math.min(300, Math.max(1, Math.floor(configuredMessageRetryInterval)))
-  : 10;
-const configuredServiceWindowHours = Number(process.env.WHATSAPP_SERVICE_WINDOW_HOURS || 24);
-const WHATSAPP_SERVICE_WINDOW_HOURS = Number.isFinite(configuredServiceWindowHours)
-  ? Math.min(168, Math.max(1, configuredServiceWindowHours))
-  : 24;
-const WHATSAPP_SERVICE_WINDOW_MS = WHATSAPP_SERVICE_WINDOW_HOURS * 60 * 60 * 1000;
-
-type WhatsAppServiceWindowState = {
-  isOpen: boolean;
-  lastInboundAt: Date | null;
-  expiresAt: Date | null;
-  remainingSeconds: number;
-};
-
-function getWhatsAppServiceWindowState(value: Date | string | null | undefined): WhatsAppServiceWindowState {
-  if (!value) {
-    return {
-      isOpen: false,
-      lastInboundAt: null,
-      expiresAt: null,
-      remainingSeconds: 0,
-    };
-  }
-
-  const lastInboundAt = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(lastInboundAt.getTime())) {
-    return {
-      isOpen: false,
-      lastInboundAt: null,
-      expiresAt: null,
-      remainingSeconds: 0,
-    };
-  }
-
-  const expiresAt = new Date(lastInboundAt.getTime() + WHATSAPP_SERVICE_WINDOW_MS);
-  const remainingMs = expiresAt.getTime() - Date.now();
-
-  return {
-    isOpen: remainingMs > 0,
-    lastInboundAt,
-    expiresAt,
-    remainingSeconds: Math.max(0, Math.ceil(remainingMs / 1000)),
-  };
-}
-
-function withServiceWindowFields<T extends { lastInboundAt?: Date | string | null }>(conversation: T) {
-  const windowState = getWhatsAppServiceWindowState(conversation.lastInboundAt);
-  return {
-    ...conversation,
-    serviceWindowOpen: windowState.isOpen,
-    serviceWindowExpiresAt: windowState.expiresAt?.toISOString() || null,
-    serviceWindowRemainingSeconds: windowState.remainingSeconds,
-  };
-}
-
-function getClosedServiceWindowResponse(state: WhatsAppServiceWindowState) {
-  return {
-    error:
-      "The WhatsApp 24-hour customer service window is closed. A free-form message cannot be sent. Use an approved Meta template, or wait for the contact to send a new message.",
-    code: "WHATSAPP_SERVICE_WINDOW_CLOSED",
-    serviceWindowOpen: false,
-    lastInboundAt: state.lastInboundAt?.toISOString() || null,
-    serviceWindowExpiresAt: state.expiresAt?.toISOString() || null,
-    serviceWindowHours: WHATSAPP_SERVICE_WINDOW_HOURS,
-  };
-}
 
 class MetaApiError extends Error {
   status: number;
@@ -369,11 +295,7 @@ async function hasRecentSentAIReply(conversationId: number) {
     .where(and(
       eq(schema.messages.conversationId, conversationId),
       eq(schema.messages.replyType, "ai"),
-      or(
-        eq(schema.messages.status, "sent"),
-        eq(schema.messages.status, "delivered"),
-        eq(schema.messages.status, "read"),
-      ),
+      eq(schema.messages.status, "sent"),
     ))
     .orderBy(desc(schema.messages.id))
     .limit(1);
@@ -396,9 +318,7 @@ async function sendAutomatedAIWhatsAppText(params: {
   const content = normalizeAIText(params.content, AI_AUTO_REPLY_MAX_LENGTH);
   if (!content) throw new Error("Automated AI reply text is empty.");
 
-  const saveFailedMessage = async (error: unknown) => {
-    const failedAt = new Date();
-    const failure = getThrownDeliveryFailure(error);
+  const saveFailedMessage = async () => {
     try {
       await db.insert(schema.messages).values({
         conversationId: params.conversationId,
@@ -408,12 +328,7 @@ async function sendAutomatedAIWhatsAppText(params: {
         messageType: "text",
         replyType: params.replyType || "ai",
         status: "failed",
-        timestamp: failedAt,
-        statusUpdatedAt: failedAt,
-        failedAt,
-        failureCode: failure.code,
-        failureTitle: failure.title,
-        failureDetails: failure.details,
+        timestamp: new Date(),
         replyContextMetaMessageId: params.replyToMetaMessageId || null,
       });
     } catch (saveError) {
@@ -422,14 +337,12 @@ async function sendAutomatedAIWhatsAppText(params: {
   };
 
   if (!params.whatsappNumber.isActive) {
-    const error = new AIAutoReplyDeliveryError("The configured WhatsApp number is inactive.");
-    await saveFailedMessage(error);
-    throw error;
+    await saveFailedMessage();
+    throw new AIAutoReplyDeliveryError("The configured WhatsApp number is inactive.");
   }
   if (!params.whatsappNumber.phoneNumberId || !params.whatsappNumber.accessToken) {
-    const error = new AIAutoReplyDeliveryError("Phone Number ID or Access Token is missing in WhatsApp settings.");
-    await saveFailedMessage(error);
-    throw error;
+    await saveFailedMessage();
+    throw new AIAutoReplyDeliveryError("Phone Number ID or Access Token is missing in WhatsApp settings.");
   }
 
   try {
@@ -451,7 +364,6 @@ async function sendAutomatedAIWhatsAppText(params: {
       replyType: params.replyType || "ai",
       status: "sent",
       timestamp: new Date(),
-      statusUpdatedAt: new Date(),
       metaMessageId: sentMetaMessageId,
       replyContextMetaMessageId: params.replyToMetaMessageId || null,
     }).returning();
@@ -467,7 +379,7 @@ async function sendAutomatedAIWhatsAppText(params: {
 
     return savedMessage;
   } catch (error) {
-    await saveFailedMessage(error);
+    await saveFailedMessage();
     await db.update(schema.conversations)
       .set({ status: "human_handover", lastMessageAt: new Date() })
       .where(eq(schema.conversations.id, params.conversationId));
@@ -975,150 +887,6 @@ async function sendWhatsAppTextMessage(params: {
   return data;
 }
 
-type MetaDeliveryStatus = "sent" | "delivered" | "read" | "failed";
-
-const META_SUCCESS_STATUS_RANK: Record<string, number> = {
-  sent: 1,
-  delivered: 2,
-  read: 3,
-};
-
-function parseMetaEventTimestamp(value: unknown) {
-  const seconds = Number(value);
-  return Number.isFinite(seconds) && seconds > 0
-    ? new Date(seconds * 1000)
-    : new Date();
-}
-
-function getMetaStatusFailure(statusEvent: any) {
-  const error = Array.isArray(statusEvent?.errors) ? statusEvent.errors[0] : null;
-  const code = error?.code !== undefined && error?.code !== null
-    ? String(error.code)
-    : null;
-  const title = String(error?.title || error?.message || "WhatsApp delivery failed").trim();
-  const details = String(
-    error?.error_data?.details ||
-    error?.error_data?.messaging_product ||
-    error?.message ||
-    title,
-  ).trim();
-
-  return {
-    code,
-    title: title || "WhatsApp delivery failed",
-    details: details || "Meta did not provide additional delivery details.",
-  };
-}
-
-function getThrownDeliveryFailure(error: any) {
-  return {
-    code: error instanceof MetaApiError && error.code !== undefined
-      ? String(error.code)
-      : null,
-    title: error instanceof MetaApiError
-      ? String(error.type || "Meta API send failed")
-      : "WhatsApp send failed",
-    details: String(error?.message || "Unknown WhatsApp send error."),
-  };
-}
-
-function shouldApplyMetaDeliveryStatus(currentStatus: string, incomingStatus: MetaDeliveryStatus) {
-  const current = String(currentStatus || "").toLowerCase();
-
-  // A delivered/read receipt proves successful delivery and must never be
-  // overwritten by a delayed failure or lower-order status event.
-  if (incomingStatus === "failed") {
-    return !["delivered", "read"].includes(current);
-  }
-
-  if (current === "failed") return true;
-  const currentRank = META_SUCCESS_STATUS_RANK[current] || 0;
-  const incomingRank = META_SUCCESS_STATUS_RANK[incomingStatus] || 0;
-  return incomingRank >= currentRank;
-}
-
-async function processMetaDeliveryStatusEvents(params: {
-  whatsappNumberId: number;
-  statuses: any[];
-}) {
-  let updated = 0;
-  let ignored = 0;
-  let unknown = 0;
-
-  for (const statusEvent of params.statuses) {
-    const metaMessageId = String(statusEvent?.id || "").trim();
-    const incomingStatus = String(statusEvent?.status || "").trim().toLowerCase() as MetaDeliveryStatus;
-
-    if (!metaMessageId || !["sent", "delivered", "read", "failed"].includes(incomingStatus)) {
-      ignored += 1;
-      continue;
-    }
-
-    const [message] = await db
-      .select()
-      .from(schema.messages)
-      .where(eq(schema.messages.metaMessageId, metaMessageId))
-      .limit(1);
-
-    if (!message) {
-      unknown += 1;
-      console.warn(
-        `WhatsApp status event referenced unknown Meta message ${metaMessageId} ` +
-        `(number ${params.whatsappNumberId}, status ${incomingStatus}).`,
-      );
-      continue;
-    }
-
-    if (!shouldApplyMetaDeliveryStatus(message.status, incomingStatus)) {
-      ignored += 1;
-      continue;
-    }
-
-    const occurredAt = parseMetaEventTimestamp(statusEvent?.timestamp);
-    const updates: any = {
-      status: incomingStatus,
-      statusUpdatedAt: occurredAt,
-    };
-
-    if (incomingStatus === "delivered") {
-      updates.deliveredAt = message.deliveredAt || occurredAt;
-      updates.failureCode = null;
-      updates.failureTitle = null;
-      updates.failureDetails = null;
-      updates.failedAt = null;
-    } else if (incomingStatus === "read") {
-      updates.deliveredAt = message.deliveredAt || occurredAt;
-      updates.readAt = message.readAt || occurredAt;
-      updates.failureCode = null;
-      updates.failureTitle = null;
-      updates.failureDetails = null;
-      updates.failedAt = null;
-    } else if (incomingStatus === "failed") {
-      const failure = getMetaStatusFailure(statusEvent);
-      updates.failedAt = occurredAt;
-      updates.failureCode = failure.code;
-      updates.failureTitle = failure.title;
-      updates.failureDetails = failure.details;
-
-      await auditLog(
-        null,
-        null,
-        "WhatsApp Delivery Failed",
-        `Meta message ${metaMessageId} failed: ${failure.code || "no-code"} - ${failure.details}`,
-      );
-    }
-
-    await db
-      .update(schema.messages)
-      .set(updates)
-      .where(eq(schema.messages.id, message.id));
-
-    updated += 1;
-  }
-
-  return { updated, ignored, unknown };
-}
-
 
 class WorkflowDeliveryError extends Error {
   constructor(message: string) {
@@ -1138,9 +906,7 @@ async function sendWorkflowWhatsAppTextMessage(params: {
     throw new Error("Workflow message text is empty.");
   }
 
-  const saveFailedMessage = async (reason: string, error?: unknown) => {
-    const failedAt = new Date();
-    const failure = getThrownDeliveryFailure(error || new Error(reason));
+  const saveFailedMessage = async (reason: string) => {
     try {
       await db.insert(schema.messages).values({
         conversationId: params.conversationId,
@@ -1150,12 +916,7 @@ async function sendWorkflowWhatsAppTextMessage(params: {
         messageType: "text",
         replyType: "workflow",
         status: "failed",
-        timestamp: failedAt,
-        statusUpdatedAt: failedAt,
-        failedAt,
-        failureCode: failure.code,
-        failureTitle: failure.title,
-        failureDetails: failure.details,
+        timestamp: new Date(),
       });
     } catch (saveError) {
       console.error(
@@ -1224,7 +985,7 @@ async function sendWorkflowWhatsAppTextMessage(params: {
     });
   } catch (error: any) {
     const message = error?.message || "Unknown Meta WhatsApp error.";
-    await saveFailedMessage(message, error);
+    await saveFailedMessage(message);
     console.error(
       `Workflow WhatsApp send failed for conversation ${params.conversationId}: ${message}`,
     );
@@ -1245,7 +1006,6 @@ async function sendWorkflowWhatsAppTextMessage(params: {
       replyType: "workflow",
       status: "sent",
       timestamp: new Date(),
-      statusUpdatedAt: new Date(),
       metaMessageId: sentMetaMessageId,
     })
     .returning();
@@ -1638,36 +1398,12 @@ async function ensureMessageActionSchema() {
   // states to be overwritten every time a new message arrived.
   await db.execute(sql`
     ALTER TABLE conversations
-      ADD COLUMN IF NOT EXISTS is_unread boolean NOT NULL DEFAULT false,
-      ADD COLUMN IF NOT EXISTS last_inbound_at timestamp
+      ADD COLUMN IF NOT EXISTS is_unread boolean NOT NULL DEFAULT false
   `);
 
   await db.execute(sql`
     ALTER TABLE conversations
       ALTER COLUMN status SET DEFAULT 'open'
-  `);
-
-  // Backfill the service-window anchor from the latest stored inbound contact
-  // message. Only a customer message opens WhatsApp's service window.
-  await db.execute(sql`
-    UPDATE conversations AS conversation
-      SET last_inbound_at = latest.latest_inbound_at
-      FROM (
-        SELECT conversation_id, MAX(timestamp) AS latest_inbound_at
-        FROM messages
-        WHERE sender = 'contact'
-        GROUP BY conversation_id
-      ) AS latest
-      WHERE conversation.id = latest.conversation_id
-        AND (
-          conversation.last_inbound_at IS NULL
-          OR conversation.last_inbound_at < latest.latest_inbound_at
-        )
-  `);
-
-  await db.execute(sql`
-    CREATE INDEX IF NOT EXISTS idx_conversations_last_inbound_at
-      ON conversations (last_inbound_at DESC)
   `);
 
   // One-time compatibility migration for conversations created by older builds.
@@ -1717,28 +1453,7 @@ async function ensureMessageActionSchema() {
       ADD COLUMN IF NOT EXISTS meta_media_id text,
       ADD COLUMN IF NOT EXISTS media_mime_type text,
       ADD COLUMN IF NOT EXISTS media_filename text,
-      ADD COLUMN IF NOT EXISTS media_caption text,
-      ADD COLUMN IF NOT EXISTS status_updated_at timestamp,
-      ADD COLUMN IF NOT EXISTS delivered_at timestamp,
-      ADD COLUMN IF NOT EXISTS read_at timestamp,
-      ADD COLUMN IF NOT EXISTS failed_at timestamp,
-      ADD COLUMN IF NOT EXISTS failure_code text,
-      ADD COLUMN IF NOT EXISTS failure_title text,
-      ADD COLUMN IF NOT EXISTS failure_details text,
-      ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS last_retry_at timestamp,
-      ADD COLUMN IF NOT EXISTS retry_of_message_id integer
-  `);
-
-  await db.execute(sql`
-    UPDATE messages
-      SET status_updated_at = COALESCE(status_updated_at, timestamp)
-      WHERE status_updated_at IS NULL
-  `);
-
-  await db.execute(sql`
-    CREATE INDEX IF NOT EXISTS idx_messages_delivery_status
-      ON messages (status, status_updated_at DESC)
+      ADD COLUMN IF NOT EXISTS media_caption text
   `);
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS message_user_states (
@@ -2695,7 +2410,6 @@ app.get("/api/conversations", authenticateJWT, async (req: any, res) => {
       status: schema.conversations.status,
       isUnread: schema.conversations.isUnread,
       lastMessageAt: schema.conversations.lastMessageAt,
-      lastInboundAt: schema.conversations.lastInboundAt,
       contactName: schema.contacts.name,
       contactPhone: schema.contacts.phoneNumber,
       contactTags: schema.contacts.tags,
@@ -2720,7 +2434,7 @@ app.get("/api/conversations", authenticateJWT, async (req: any, res) => {
       );
     }
 
-    res.json(filtered.map(conversation => withServiceWindowFields(conversation)));
+    res.json(filtered);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -2738,7 +2452,6 @@ app.get("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
       status: schema.conversations.status,
       isUnread: schema.conversations.isUnread,
       lastMessageAt: schema.conversations.lastMessageAt,
-      lastInboundAt: schema.conversations.lastInboundAt,
       whatsappNumberName: schema.whatsappNumbers.displayName,
       whatsappNumberPhone: schema.whatsappNumbers.phoneNumber,
     })
@@ -2762,7 +2475,7 @@ app.get("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
 
     res.json({
       conversation: {
-        ...withServiceWindowFields(conv),
+        ...conv,
         assignedUserName: assignedName,
       },
       contact
@@ -3662,17 +3375,6 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
       return res.status(400).json({ error: "WhatsApp number mismatch for this conversation." });
     }
 
-    const serviceWindow = getWhatsAppServiceWindowState(conv.lastInboundAt);
-    if (!serviceWindow.isOpen) {
-      await auditLog(
-        req.user.id,
-        req.user.email,
-        "Free-form Message Blocked",
-        `Blocked free-form WhatsApp send for conversation ${convId}; the ${WHATSAPP_SERVICE_WINDOW_HOURS}-hour service window is closed.`,
-      );
-      return res.status(409).json(getClosedServiceWindowResponse(serviceWindow));
-    }
-
     // 2. Get the contact so the message cannot be sent to the wrong phone number
     const [contact] = await db
       .select()
@@ -3786,7 +3488,6 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
           status: "sent",
           agentId: req.user.id,
           timestamp: new Date(),
-          statusUpdatedAt: new Date(),
           replyToMessageId: replyToMessageId || null,
           forwardedFromMessageId: forwardedFromMessageId || null,
           metaMessageId: sentMetaMessageId,
@@ -3837,8 +3538,6 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
 
       return res.json(newMsg);
     } catch (metaError: any) {
-      const failedAt = new Date();
-      const failure = getThrownDeliveryFailure(metaError);
       await db.insert(schema.messages).values({
         conversationId: convId,
         sender: "agent",
@@ -3848,12 +3547,7 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
         replyType: replyType || "manual",
         status: "failed",
         agentId: req.user.id,
-        timestamp: failedAt,
-        statusUpdatedAt: failedAt,
-        failedAt,
-        failureCode: failure.code,
-        failureTitle: failure.title,
-        failureDetails: failure.details,
+        timestamp: new Date(),
         replyToMessageId: replyToMessageId || null,
         forwardedFromMessageId: forwardedFromMessageId || null,
       });
@@ -3875,198 +3569,6 @@ app.post("/api/messages/send", authenticateJWT, async (req: any, res) => {
   } catch (error: any) {
     console.error("Send message error:", error);
     res.status(500).json({ error: error.message });
-  }
-});
-
-app.post("/api/messages/:id/retry", authenticateJWT, async (req: any, res) => {
-  const messageId = Number(req.params.id);
-  if (!Number.isInteger(messageId)) {
-    return res.status(400).json({ error: "Invalid message ID." });
-  }
-
-  try {
-    const [failedMessage] = await db
-      .select()
-      .from(schema.messages)
-      .where(eq(schema.messages.id, messageId))
-      .limit(1);
-
-    if (!failedMessage) {
-      return res.status(404).json({ error: "Message not found." });
-    }
-    if (failedMessage.sender === "contact") {
-      return res.status(400).json({ error: "Inbound contact messages cannot be retried." });
-    }
-    if (failedMessage.status !== "failed") {
-      return res.status(400).json({ error: "Only failed outgoing messages can be retried." });
-    }
-    if (failedMessage.messageType !== "text") {
-      return res.status(400).json({
-        error: "Attachments cannot be retried automatically. Please attach the file again and send a new message.",
-      });
-    }
-
-    const currentRetryCount = Number(failedMessage.retryCount || 0);
-    if (currentRetryCount >= MESSAGE_RETRY_MAX_ATTEMPTS) {
-      return res.status(429).json({
-        error: `Maximum retry limit (${MESSAGE_RETRY_MAX_ATTEMPTS}) reached. Send a fresh message after checking the Meta configuration.`,
-      });
-    }
-
-    if (failedMessage.lastRetryAt) {
-      const retryAgeMs = Date.now() - new Date(failedMessage.lastRetryAt).getTime();
-      const minimumMs = MESSAGE_RETRY_MIN_INTERVAL_SECONDS * 1000;
-      if (retryAgeMs >= 0 && retryAgeMs < minimumMs) {
-        return res.status(429).json({
-          error: `Please wait ${Math.ceil((minimumMs - retryAgeMs) / 1000)} seconds before retrying again.`,
-        });
-      }
-    }
-
-    const [conversation] = await db
-      .select()
-      .from(schema.conversations)
-      .where(eq(schema.conversations.id, failedMessage.conversationId))
-      .limit(1);
-    if (!conversation) return res.status(404).json({ error: "Conversation not found." });
-
-    const serviceWindow = getWhatsAppServiceWindowState(conversation.lastInboundAt);
-    if (!serviceWindow.isOpen) {
-      await auditLog(
-        req.user.id,
-        req.user.email,
-        "Message Retry Blocked",
-        `Blocked retry for message ${failedMessage.id}; conversation ${conversation.id} is outside the WhatsApp service window.`,
-      );
-      return res.status(409).json({
-        ...getClosedServiceWindowResponse(serviceWindow),
-        retryCount: Number(failedMessage.retryCount || 0),
-        maxRetries: MESSAGE_RETRY_MAX_ATTEMPTS,
-      });
-    }
-
-    const [contact] = await db
-      .select()
-      .from(schema.contacts)
-      .where(eq(schema.contacts.id, conversation.contactId))
-      .limit(1);
-    if (!contact) return res.status(404).json({ error: "Contact not found." });
-
-    const [whatsappNumber] = await db
-      .select()
-      .from(schema.whatsappNumbers)
-      .where(eq(schema.whatsappNumbers.id, conversation.whatsappNumberId))
-      .limit(1);
-    if (!whatsappNumber) {
-      return res.status(404).json({ error: "WhatsApp number configuration not found." });
-    }
-    if (!whatsappNumber.isActive) {
-      return res.status(400).json({ error: "This WhatsApp number is inactive." });
-    }
-    if (!whatsappNumber.phoneNumberId || !whatsappNumber.accessToken) {
-      return res.status(400).json({ error: "Phone Number ID or Access Token is missing." });
-    }
-
-    let replyToMetaMessageId = failedMessage.replyContextMetaMessageId || null;
-    if (!replyToMetaMessageId && failedMessage.replyToMessageId) {
-      const [repliedMessage] = await db
-        .select({ metaMessageId: schema.messages.metaMessageId })
-        .from(schema.messages)
-        .where(eq(schema.messages.id, failedMessage.replyToMessageId))
-        .limit(1);
-      replyToMetaMessageId = repliedMessage?.metaMessageId || null;
-    }
-
-    const retryAt = new Date();
-    const nextRetryCount = currentRetryCount + 1;
-
-    try {
-      const metaResult = await sendWhatsAppTextMessage({
-        phoneNumberId: whatsappNumber.phoneNumberId,
-        accessToken: whatsappNumber.accessToken,
-        to: contact.phoneNumber,
-        body: failedMessage.content,
-        replyToMetaMessageId,
-      });
-
-      const sentMetaMessageId = String(metaResult?.messages?.[0]?.id || "").trim() || null;
-      const [retriedMessage] = await db
-        .insert(schema.messages)
-        .values({
-          conversationId: failedMessage.conversationId,
-          sender: failedMessage.sender,
-          senderName: failedMessage.senderName,
-          content: failedMessage.content,
-          messageType: "text",
-          replyType: failedMessage.replyType,
-          status: "sent",
-          timestamp: retryAt,
-          statusUpdatedAt: retryAt,
-          agentId: failedMessage.agentId || (failedMessage.sender === "agent" ? req.user.id : null),
-          replyToMessageId: failedMessage.replyToMessageId || null,
-          forwardedFromMessageId: failedMessage.forwardedFromMessageId || null,
-          metaMessageId: sentMetaMessageId,
-          replyContextMetaMessageId: replyToMetaMessageId,
-          retryOfMessageId: failedMessage.id,
-        })
-        .returning();
-
-      await db
-        .update(schema.messages)
-        .set({ retryCount: nextRetryCount, lastRetryAt: retryAt })
-        .where(eq(schema.messages.id, failedMessage.id));
-
-      await db
-        .update(schema.conversations)
-        .set({ lastMessageAt: retryAt })
-        .where(eq(schema.conversations.id, conversation.id));
-
-      await auditLog(
-        req.user.id,
-        req.user.email,
-        "Message Retried",
-        `Retried failed message ${failedMessage.id} as message ${retriedMessage.id} ` +
-          `(Meta ID: ${sentMetaMessageId || "not returned"}).`,
-      );
-
-      return res.json({
-        success: true,
-        message: retriedMessage,
-        sourceMessageId: failedMessage.id,
-        sourceRetryCount: nextRetryCount,
-      });
-    } catch (retryError: any) {
-      const failure = getThrownDeliveryFailure(retryError);
-      await db
-        .update(schema.messages)
-        .set({
-          retryCount: nextRetryCount,
-          lastRetryAt: retryAt,
-          statusUpdatedAt: retryAt,
-          failedAt: retryAt,
-          failureCode: failure.code,
-          failureTitle: failure.title,
-          failureDetails: failure.details,
-        })
-        .where(eq(schema.messages.id, failedMessage.id));
-
-      await auditLog(
-        req.user.id,
-        req.user.email,
-        "Message Retry Failed",
-        `Retry ${nextRetryCount} failed for message ${failedMessage.id}: ${failure.details}`,
-      );
-
-      const routeError = getMetaRouteError(retryError);
-      return res.status(routeError.status).json({
-        ...routeError.body,
-        retryCount: nextRetryCount,
-        maxRetries: MESSAGE_RETRY_MAX_ATTEMPTS,
-      });
-    }
-  } catch (error: any) {
-    console.error("Retry message error:", error);
-    return res.status(500).json({ error: error.message || "Could not retry message." });
   }
 });
 
@@ -4326,25 +3828,11 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
     let mediaCaption: string | null = null;
 
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
-    const statusEvents = Array.isArray(value?.statuses) ? value.statuses : [];
-    let deliveryStatusSummary: { updated: number; ignored: number; unknown: number } | null = null;
-
-    if (statusEvents.length > 0) {
-      deliveryStatusSummary = await processMetaDeliveryStatusEvents({
-        whatsappNumberId: numId,
-        statuses: statusEvents,
-      });
-    }
-
     const msg = value?.messages?.[0];
 
-    // Delivery/read/failed status events normally have no messages array. They
-    // are acknowledged only after their matching local message rows are updated.
+    // Delivery/read status events have no messages array and should be acknowledged.
     if (!msg) {
-      return res.status(200).json({
-        status: "delivery_status_acknowledged",
-        ...(deliveryStatusSummary || { updated: 0, ignored: 0, unknown: 0 }),
-      });
+      return res.status(200).json({ status: "acknowledged" });
     }
 
     const incomingMetaMessageId = String(msg.id || "").trim();
@@ -4445,7 +3933,6 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
         status: "open",
         isUnread: true,
         lastMessageAt: receivedAt,
-        lastInboundAt: receivedAt,
       }).returning();
     } else {
       // A new inbound message is unread, but it must not destroy an active
@@ -4455,21 +3942,10 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
         : "open";
 
       await db.update(schema.conversations)
-        .set({
-          status: inboundStatus,
-          isUnread: true,
-          lastMessageAt: receivedAt,
-          lastInboundAt: receivedAt,
-        })
+        .set({ status: inboundStatus, isUnread: true, lastMessageAt: receivedAt })
         .where(eq(schema.conversations.id, conv.id));
 
-      conv = {
-        ...conv,
-        status: inboundStatus,
-        isUnread: true,
-        lastMessageAt: receivedAt,
-        lastInboundAt: receivedAt,
-      };
+      conv = { ...conv, status: inboundStatus, isUnread: true, lastMessageAt: receivedAt };
     }
 
     let replyToMessageId: number | null = null;

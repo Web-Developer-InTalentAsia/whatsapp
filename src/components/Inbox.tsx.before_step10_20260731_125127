@@ -79,39 +79,6 @@ function getDeliveryStatusTitle(message: Message) {
   return `${label}${timestamp ? ` at ${new Date(timestamp).toLocaleString()}` : ""}${detail}`;
 }
 
-function getServiceWindowView(conversation: Conversation | null, nowMs: number) {
-  const expiresAt = conversation?.serviceWindowExpiresAt
-    ? new Date(conversation.serviceWindowExpiresAt)
-    : conversation?.lastInboundAt
-      ? new Date(new Date(conversation.lastInboundAt).getTime() + 24 * 60 * 60 * 1000)
-      : null;
-
-  if (!expiresAt || Number.isNaN(expiresAt.getTime())) {
-    return {
-      isOpen: false,
-      expiresAt: null as Date | null,
-      remainingSeconds: 0,
-    };
-  }
-
-  const remainingSeconds = Math.max(0, Math.ceil((expiresAt.getTime() - nowMs) / 1000));
-  return {
-    isOpen: remainingSeconds > 0,
-    expiresAt,
-    remainingSeconds,
-  };
-}
-
-function formatServiceWindowRemaining(totalSeconds: number) {
-  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-
-  if (hours > 0) return `${hours}h ${minutes}m remaining`;
-  if (minutes > 0) return `${minutes}m remaining`;
-  return "less than 1 minute remaining";
-}
-
 export default function Inbox({ token, currentUser }: InboxProps) {
   // States
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -129,7 +96,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const [sendingReply, setSendingReply] = useState(false);
   const [retryingMessageId, setRetryingMessageId] = useState<number | null>(null);
   const [resumingAutomation, setResumingAutomation] = useState(false);
-  const [serviceWindowClock, setServiceWindowClock] = useState(() => Date.now());
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<number | null>(null);
@@ -157,14 +123,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
-
-  const serviceWindow = getServiceWindowView(selectedConversation, serviceWindowClock);
-  const freeFormMessagingAllowed = serviceWindow.isOpen;
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => setServiceWindowClock(Date.now()), 30000);
-    return () => window.clearInterval(intervalId);
-  }, []);
 
   // Fetch conversations list
   const fetchConversations = async (selectedIdToKeep?: number) => {
@@ -341,14 +299,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       if (response.ok) {
         const data = await response.json();
         setContact(data.contact);
-        if (data.conversation) {
-          setSelectedConversation((previous) => (
-            previous?.id === data.conversation.id
-              ? { ...previous, ...data.conversation }
-              : data.conversation
-          ));
-          setServiceWindowClock(Date.now());
-        }
       }
 
       // 2. Fetch messages
@@ -554,12 +504,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   // Send Message
   const handleSendMessage = async (text: string, replyType: 'manual' | 'ai' | 'workflow' = 'manual') => {
     if (!selectedConversation || (!text.trim() && !attachment) || !contact) return;
-    if (!freeFormMessagingAllowed) {
-      alert(
-        "The WhatsApp 24-hour customer service window is closed. Free-form replies are blocked. Use an approved Meta template or wait for the contact to send a new message.",
-      );
-      return;
-    }
     setSendingReply(true);
 
     try {
@@ -591,16 +535,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       }
 
       if (!response.ok) {
-        if (data.code === "WHATSAPP_SERVICE_WINDOW_CLOSED") {
-          setSelectedConversation(previous => previous ? {
-            ...previous,
-            serviceWindowOpen: false,
-            serviceWindowExpiresAt: data.serviceWindowExpiresAt || previous.serviceWindowExpiresAt,
-            lastInboundAt: data.lastInboundAt || previous.lastInboundAt,
-            serviceWindowRemainingSeconds: 0,
-          } : previous);
-          setServiceWindowClock(Date.now());
-        }
         alert(data.error || "Failed to send message.");
         return;
       }
@@ -634,12 +568,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
   const handleRetryMessage = async (message: Message) => {
     if (message.status !== "failed" || retryingMessageId !== null) return;
-    if (!freeFormMessagingAllowed) {
-      alert(
-        "This retry is blocked because the WhatsApp 24-hour customer service window is closed.",
-      );
-      return;
-    }
 
     const confirmed = window.confirm(
       "Retry this failed WhatsApp message? A new message record will be created if Meta accepts the retry.",
@@ -655,16 +583,6 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        if (data.code === "WHATSAPP_SERVICE_WINDOW_CLOSED") {
-          setSelectedConversation(previous => previous ? {
-            ...previous,
-            serviceWindowOpen: false,
-            serviceWindowExpiresAt: data.serviceWindowExpiresAt || previous.serviceWindowExpiresAt,
-            lastInboundAt: data.lastInboundAt || previous.lastInboundAt,
-            serviceWindowRemainingSeconds: 0,
-          } : previous);
-          setServiceWindowClock(Date.now());
-        }
         alert(data.error || "Could not retry the message.");
         setMessages(previous => previous.map(item =>
           item.id === message.id
@@ -1220,7 +1138,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                               <button
                                 type="button"
                                 onClick={() => void handleRetryMessage(m)}
-                                disabled={!freeFormMessagingAllowed || retryingMessageId !== null}
+                                disabled={retryingMessageId !== null}
                                 className="inline-flex items-center gap-1 rounded-md border border-red-800 px-2 py-0.5 text-[9px] font-semibold text-red-300 hover:bg-red-950 disabled:opacity-50"
                               >
                                 <RefreshCw className={`h-3 w-3 ${retryingMessageId === m.id ? "animate-spin" : ""}`} />
@@ -1359,7 +1277,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                                   <button
                                     type="button"
                                     onClick={() => void handleRetryMessage(m)}
-                                    disabled={!freeFormMessagingAllowed || retryingMessageId !== null}
+                                    disabled={retryingMessageId !== null}
                                     className="inline-flex items-center gap-1 rounded border border-red-300/50 px-1.5 py-0.5 text-[9px] font-semibold text-red-50 hover:bg-red-950/40 disabled:opacity-50"
                                   >
                                     <RefreshCw className={`h-3 w-3 ${retryingMessageId === m.id ? "animate-spin" : ""}`} />
@@ -1468,11 +1386,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                             </button>
                             <button
                               onClick={() => handleSendMessage(sug, "ai")}
-                              disabled={!freeFormMessagingAllowed}
-                              className="text-[10px] bg-emerald-600 text-white hover:bg-emerald-500 px-2.5 py-1 rounded-md font-semibold transition cursor-pointer disabled:bg-zinc-800 disabled:text-zinc-600 disabled:cursor-not-allowed"
-                              title={freeFormMessagingAllowed
-                                ? "Send this grounded suggestion"
-                                : "The WhatsApp 24-hour service window is closed"}
+                              className="text-[10px] bg-emerald-600 text-white hover:bg-emerald-500 px-2.5 py-1 rounded-md font-semibold transition cursor-pointer"
                             >
                               Send
                             </button>
@@ -1485,36 +1399,8 @@ export default function Inbox({ token, currentUser }: InboxProps) {
               </div>
             )}
 
-            {/* Outgoing Message Entry (24-hour customer service window) */}
+            {/* Outgoing Message Entry (24 hours compliance checker) */}
             <div className="p-4 border-t border-zinc-900 bg-[#0c0c0e] relative">
-              <div className={`mb-3 rounded-xl border px-3.5 py-2.5 flex items-start gap-2.5 ${
-                freeFormMessagingAllowed
-                  ? "border-emerald-500/25 bg-emerald-500/8"
-                  : "border-amber-500/35 bg-amber-500/10"
-              }`}>
-                {freeFormMessagingAllowed ? (
-                  <Clock className="h-4 w-4 text-emerald-400 mt-0.5 shrink-0" />
-                ) : (
-                  <AlertCircle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
-                )}
-                <div>
-                  <p className={`text-[11px] font-bold ${
-                    freeFormMessagingAllowed ? "text-emerald-300" : "text-amber-300"
-                  }`}>
-                    {freeFormMessagingAllowed
-                      ? `WhatsApp service window open · ${formatServiceWindowRemaining(serviceWindow.remainingSeconds)}`
-                      : "WhatsApp 24-hour service window closed"}
-                  </p>
-                  <p className={`text-[10px] mt-0.5 ${
-                    freeFormMessagingAllowed ? "text-emerald-100/60" : "text-amber-100/70"
-                  }`}>
-                    {freeFormMessagingAllowed
-                      ? `Free-form replies are allowed until ${serviceWindow.expiresAt?.toLocaleString() || "the window expires"}.`
-                      : "Free-form text, attachments, AI replies, and retries are blocked. Use an approved Meta template or wait for the contact to message again."}
-                  </p>
-                </div>
-              </div>
-
               {replyingTo && (
                 <div className="mb-2 flex items-stretch rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800">
                   <div className="w-1 bg-emerald-500" />
@@ -1594,30 +1480,23 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      disabled={!freeFormMessagingAllowed}
-                      className="p-1.5 rounded-lg text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed"
-                      title={freeFormMessagingAllowed
-                        ? "Attach photo, video, audio, or document"
-                        : "The 24-hour service window is closed"}
+                      className="p-1.5 rounded-lg text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800"
+                      title="Attach photo, video, audio, or document"
                     >
                       <Paperclip className="h-4 w-4" />
                     </button>
                     <textarea
                       rows={1}
-                      placeholder={freeFormMessagingAllowed
-                        ? "Type a manual candidate reply (type '/' for templates)..."
-                        : "24-hour window closed — use an approved Meta template"}
+                      placeholder="Type a manual candidate reply (type '/' for templates)..."
                       value={replyText}
                       onChange={(e) => handleTextareaChange(e.target.value)}
                       onKeyDown={handleKeyDown}
-                      disabled={!freeFormMessagingAllowed}
-                      className="flex-1 bg-transparent border-0 outline-none text-sm text-zinc-100 focus:ring-0 resize-none max-h-24 font-sans py-1 placeholder-zinc-500 disabled:cursor-not-allowed disabled:text-zinc-600"
+                      className="flex-1 bg-transparent border-0 outline-none text-sm text-zinc-100 focus:ring-0 resize-none max-h-24 font-sans py-1 placeholder-zinc-500"
                     />
                     <button
                       type="button"
                       onClick={() => void toggleVoiceRecording()}
-                      disabled={!freeFormMessagingAllowed}
-                      className={`p-1.5 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                      className={`p-1.5 rounded-lg transition ${
                         isRecording
                           ? "bg-rose-500 text-white animate-pulse"
                           : "text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800"
@@ -1633,8 +1512,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                           setShowQuickRepliesButtonMenu(!showQuickRepliesButtonMenu);
                           setShowQuickReplyMenu(false);
                         }}
-                        disabled={!freeFormMessagingAllowed}
-                        className={`p-1.5 rounded-lg hover:bg-[#1a1a24] transition cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
+                        className={`p-1.5 rounded-lg hover:bg-[#1a1a24] transition cursor-pointer shrink-0 ${
                           showQuickRepliesButtonMenu ? "text-emerald-400 bg-zinc-800" : "text-zinc-500 hover:text-zinc-300"
                         }`}
                         title="Canned Quick Replies"
@@ -1645,7 +1523,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   </div>
                   <button
                     type="submit"
-                    disabled={!freeFormMessagingAllowed || sendingReply || (!replyText.trim() && !attachment)}
+                    disabled={sendingReply || (!replyText.trim() && !attachment)}
                     className="h-11 w-11 shrink-0 bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-xl flex items-center justify-center transition shadow-lg shadow-emerald-950/20 cursor-pointer"
                   >
                     <Send className="h-5 w-5" />
