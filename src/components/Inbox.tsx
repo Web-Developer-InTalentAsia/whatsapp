@@ -11,6 +11,8 @@ import { Contact, Conversation, Message, MetaMessageTemplate } from "../types.ts
 interface InboxProps {
   token: string;
   currentUser: any;
+  initialConversationId?: number | null;
+  onInitialConversationHandled?: () => void;
 }
 
 function MessageMedia({ message, token }: { message: Message; token: string }) {
@@ -112,7 +114,7 @@ function formatServiceWindowRemaining(totalSeconds: number) {
   return "less than 1 minute remaining";
 }
 
-export default function Inbox({ token, currentUser }: InboxProps) {
+export default function Inbox({ token, currentUser, initialConversationId, onInitialConversationHandled }: InboxProps) {
   // States
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
@@ -410,6 +412,35 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       setLoadingChat(false);
     }
   };
+
+  useEffect(() => {
+    if (!initialConversationId) return;
+
+    let stopped = false;
+    const openRequestedConversation = async () => {
+      try {
+        setFilter("all");
+        setAssignedToMe(false);
+        setSearch("");
+        const response = await fetch(`/api/conversations/${initialConversationId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok || stopped) return;
+        const data = await response.json();
+        if (!data?.conversation || stopped) return;
+        await handleSelectConversation(data.conversation as Conversation);
+      } catch (error) {
+        console.error("Could not open notification conversation:", error);
+      } finally {
+        if (!stopped) onInitialConversationHandled?.();
+      }
+    };
+
+    void openRequestedConversation();
+    return () => {
+      stopped = true;
+    };
+  }, [initialConversationId, token]);
 
   const handleSyncMetaTemplates = async () => {
     if (!selectedConversation || syncingMetaTemplates) return;

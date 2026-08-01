@@ -502,6 +502,25 @@ async function handoverConversation(params: {
     `Conversation ${params.conversationId}: ${params.reason}`,
   );
 
+  const [handoverConversationRecord] = await db.select({
+    assignedUserId: schema.conversations.assignedUserId,
+  })
+    .from(schema.conversations)
+    .where(eq(schema.conversations.id, params.conversationId))
+    .limit(1);
+
+  await notifyConversationRecipients({
+    conversationId: params.conversationId,
+    whatsappNumberId: params.whatsappNumberId,
+    assignedUserId: handoverConversationRecord?.assignedUserId || null,
+    includeLineOwners: true,
+    type: "human_handover",
+    title: "Recruiter handover required",
+    message: params.reason,
+    severity: "warning",
+    dedupeKey: `handover:${params.conversationId}:${params.replyToMetaMessageId || params.reason}`,
+  });
+
   if (params.sendConfirmation === false) return;
 
   const [contact] = await db.select().from(schema.contacts)
@@ -1590,6 +1609,28 @@ async function processMetaDeliveryStatusEvents(params: {
         "WhatsApp Delivery Failed",
         `Meta message ${metaMessageId} failed: ${failure.code || "no-code"} - ${failure.details}`,
       );
+
+      const [failedConversation] = await db.select({
+        whatsappNumberId: schema.conversations.whatsappNumberId,
+        assignedUserId: schema.conversations.assignedUserId,
+      })
+        .from(schema.conversations)
+        .where(eq(schema.conversations.id, message.conversationId))
+        .limit(1);
+
+      if (failedConversation) {
+        await notifyConversationRecipients({
+          conversationId: message.conversationId,
+          whatsappNumberId: failedConversation.whatsappNumberId,
+          assignedUserId: failedConversation.assignedUserId,
+          explicitUserIds: [message.agentId],
+          type: "delivery_failed",
+          title: "WhatsApp message delivery failed",
+          message: `${failure.code || "No error code"}: ${failure.details}`,
+          severity: "critical",
+          dedupeKey: `delivery-failed:${message.id}:${failure.code || "unknown"}`,
+        });
+      }
     }
 
     await db
@@ -2332,6 +2373,35 @@ async function ensureMessageActionSchema() {
       ON messages (meta_message_id)
       WHERE meta_message_id IS NOT NULL
   `);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS app_notifications (
+      id serial PRIMARY KEY,
+      user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      whatsapp_number_id integer REFERENCES whatsapp_numbers(id) ON DELETE CASCADE,
+      conversation_id integer REFERENCES conversations(id) ON DELETE CASCADE,
+      type text NOT NULL,
+      title text NOT NULL,
+      message text NOT NULL,
+      severity text NOT NULL DEFAULT 'info',
+      dedupe_key text,
+      is_read boolean NOT NULL DEFAULT false,
+      read_at timestamp,
+      created_at timestamp DEFAULT now()
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_app_notifications_user_dedupe
+      ON app_notifications (dedupe_key)
+      WHERE dedupe_key IS NOT NULL
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_app_notifications_user_unread_created
+      ON app_notifications (user_id, is_read, created_at DESC)
+  `);
+
 }
 
 // Database initialization is awaited inside startServer() before the app starts listening.
@@ -2408,6 +2478,108 @@ async function auditLog(userId: number | null, email: string | null, action: str
   } catch (e) {
     console.error("Audit logging error:", e);
   }
+}
+
+
+type AppNotificationSeverity = "info" | "success" | "warning" | "critical";
+type AppNotificationType = "new_inbound" | "human_handover" | "assignment" | "delivery_failed" | "system";
+
+function notificationPreview(value: unknown, maxLength = 180) {
+  const compact = String(value || "").replace(/\s+/g, " ").trim();
+  if (!compact) return "Open the InTalent Inbox to view details.";
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
+}
+
+async function getLineNotificationRecipientIds(params: {
+  whatsappNumberId: number;
+  assignedUserId?: number | null;
+  includeLineOwners?: boolean;
+  explicitUserIds?: Array<number | null | undefined>;
+}) {
+  const recipientIds = new Set<number>();
+
+  for (const rawId of params.explicitUserIds || []) {
+    const id = Number(rawId);
+    if (Number.isInteger(id) && id > 0) recipientIds.add(id);
+  }
+
+  if (params.assignedUserId) {
+    const [assignedUser] = await db.select({ id: schema.users.id, isActive: schema.users.isActive })
+      .from(schema.users)
+      .where(eq(schema.users.id, params.assignedUserId))
+      .limit(1);
+    if (assignedUser?.isActive) recipientIds.add(assignedUser.id);
+  }
+
+  if (!params.assignedUserId || params.includeLineOwners) {
+    const lineAssignments = await db.select({
+      userId: schema.userNumberAssignments.userId,
+      isPrimaryOwner: schema.userNumberAssignments.isPrimaryOwner,
+      isActive: schema.users.isActive,
+    })
+      .from(schema.userNumberAssignments)
+      .innerJoin(schema.users, eq(schema.userNumberAssignments.userId, schema.users.id))
+      .where(eq(schema.userNumberAssignments.numberId, params.whatsappNumberId));
+
+    const activeAssignments = lineAssignments.filter(row => row.isActive);
+    const primaryOwners = activeAssignments.filter(row => row.isPrimaryOwner);
+    const selectedAssignments = primaryOwners.length > 0 ? primaryOwners : activeAssignments;
+    selectedAssignments.forEach(row => recipientIds.add(row.userId));
+  }
+
+  if (recipientIds.size === 0) {
+    const fallbackAdmins = await db.select({ id: schema.users.id })
+      .from(schema.users)
+      .where(and(eq(schema.users.isActive, true), or(eq(schema.users.role, "super_admin"), eq(schema.users.role, "admin"))));
+    fallbackAdmins.forEach(user => recipientIds.add(user.id));
+  }
+
+  return Array.from(recipientIds);
+}
+
+async function createAppNotifications(params: {
+  userIds: number[];
+  whatsappNumberId?: number | null;
+  conversationId?: number | null;
+  type: AppNotificationType;
+  title: string;
+  message: string;
+  severity?: AppNotificationSeverity;
+  dedupeKey?: string | null;
+}) {
+  const uniqueUserIds = Array.from(new Set(params.userIds.filter(id => Number.isInteger(id) && id > 0)));
+  if (uniqueUserIds.length === 0) return;
+
+  const values = uniqueUserIds.map(userId => ({
+    userId,
+    whatsappNumberId: params.whatsappNumberId || null,
+    conversationId: params.conversationId || null,
+    type: params.type,
+    title: notificationPreview(params.title, 120),
+    message: notificationPreview(params.message, 500),
+    severity: params.severity || "info",
+    dedupeKey: params.dedupeKey ? `${userId}:${params.dedupeKey}` : null,
+    isRead: false,
+    createdAt: new Date(),
+  }));
+
+  await db.insert(schema.appNotifications).values(values).onConflictDoNothing();
+}
+
+async function notifyConversationRecipients(params: {
+  conversationId: number;
+  whatsappNumberId: number;
+  assignedUserId?: number | null;
+  includeLineOwners?: boolean;
+  explicitUserIds?: Array<number | null | undefined>;
+  type: AppNotificationType;
+  title: string;
+  message: string;
+  severity?: AppNotificationSeverity;
+  dedupeKey?: string | null;
+}) {
+  const userIds = await getLineNotificationRecipientIds(params);
+  await createAppNotifications({ ...params, userIds });
 }
 
 // Login
@@ -3696,6 +3868,16 @@ app.put("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
   const { id } = req.params;
   const { status, assignedUserId, isUnread } = req.body;
   try {
+    const conversationId = parseInt(id);
+    const [existingConversation] = await db.select()
+      .from(schema.conversations)
+      .where(eq(schema.conversations.id, conversationId))
+      .limit(1);
+
+    if (!existingConversation) {
+      return res.status(404).json({ error: "Conversation not found." });
+    }
+
     const updates: any = {};
 
     if (isUnread !== undefined) {
@@ -3768,6 +3950,37 @@ app.put("/api/conversations/:id", authenticateJWT, async (req: any, res) => {
       auditAction,
       `Updated conversation ${id} (Status: ${status ?? "no-change"}, Read: ${isUnread === undefined ? "no-change" : (isUnread ? "unread" : "read")}, Assigned: ${assignedUserId ?? "no-change"}).`,
     );
+
+    const normalizedAssignedUserId = assignedUserId === null || assignedUserId === ""
+      ? null
+      : Number(assignedUserId);
+    if (assignedUserId !== undefined && normalizedAssignedUserId && normalizedAssignedUserId !== existingConversation.assignedUserId) {
+      await createAppNotifications({
+        userIds: [normalizedAssignedUserId],
+        whatsappNumberId: updated.whatsappNumberId,
+        conversationId: updated.id,
+        type: "assignment",
+        title: "Conversation assigned to you",
+        message: `Conversation #${updated.id} was assigned by ${req.user.name}.`,
+        severity: "success",
+        dedupeKey: `assignment:${updated.id}:${normalizedAssignedUserId}:${Date.now()}`,
+      });
+    }
+
+    if (status === "human_handover" && existingConversation.status !== "human_handover") {
+      await notifyConversationRecipients({
+        conversationId: updated.id,
+        whatsappNumberId: updated.whatsappNumberId,
+        assignedUserId: updated.assignedUserId,
+        includeLineOwners: true,
+        type: "human_handover",
+        title: "Recruiter takeover activated",
+        message: `Conversation #${updated.id} was moved to recruiter handover by ${req.user.name}.`,
+        severity: "warning",
+        dedupeKey: `manual-handover:${updated.id}:${Date.now()}`,
+      });
+    }
+
     res.json(updated);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -5465,6 +5678,17 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
 
     setImmediate(() => {
       void (async () => {
+        await notifyConversationRecipients({
+          conversationId: conv.id,
+          whatsappNumberId: numId,
+          assignedUserId: conv.assignedUserId || null,
+          type: "new_inbound",
+          title: `New WhatsApp message from ${contact.name || from}`,
+          message: text,
+          severity: conv.status === "human_handover" ? "warning" : "info",
+          dedupeKey: `inbound:${newMsg.id}`,
+        });
+
         await processInboundAutomation({
           conversationId: conv.id,
           whatsappNumberId: numId,
@@ -5490,6 +5714,79 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
   } catch (error: any) {
     console.error("Webhook ingestion failed:", error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+
+
+// --- PERSISTENT NOTIFICATION CENTER ENDPOINTS ---
+app.get("/api/notifications", authenticateJWT, async (req: any, res) => {
+  try {
+    const requestedLimit = Number(req.query.limit || 30);
+    const limit = Number.isFinite(requestedLimit) ? Math.min(100, Math.max(1, Math.floor(requestedLimit))) : 30;
+    const onlyUnread = String(req.query.onlyUnread || "false") === "true";
+
+    const condition = onlyUnread
+      ? and(eq(schema.appNotifications.userId, req.user.id), eq(schema.appNotifications.isRead, false))
+      : eq(schema.appNotifications.userId, req.user.id);
+
+    const notifications = await db.select()
+      .from(schema.appNotifications)
+      .where(condition)
+      .orderBy(desc(schema.appNotifications.id))
+      .limit(limit);
+
+    res.json(notifications);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Could not load notifications." });
+  }
+});
+
+app.get("/api/notifications/unread-count", authenticateJWT, async (req: any, res) => {
+  try {
+    const [result] = await db.select({ count: sql<number>`count(*)::int` })
+      .from(schema.appNotifications)
+      .where(and(
+        eq(schema.appNotifications.userId, req.user.id),
+        eq(schema.appNotifications.isRead, false),
+      ));
+    res.json({ count: Number(result?.count || 0) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Could not load notification count." });
+  }
+});
+
+app.put("/api/notifications/:id/read", authenticateJWT, async (req: any, res) => {
+  try {
+    const notificationId = Number(req.params.id);
+    if (!Number.isInteger(notificationId)) return res.status(400).json({ error: "Invalid notification ID." });
+
+    const [updated] = await db.update(schema.appNotifications)
+      .set({ isRead: true, readAt: new Date() })
+      .where(and(
+        eq(schema.appNotifications.id, notificationId),
+        eq(schema.appNotifications.userId, req.user.id),
+      ))
+      .returning();
+
+    if (!updated) return res.status(404).json({ error: "Notification not found." });
+    res.json(updated);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Could not update notification." });
+  }
+});
+
+app.put("/api/notifications/read-all", authenticateJWT, async (req: any, res) => {
+  try {
+    await db.update(schema.appNotifications)
+      .set({ isRead: true, readAt: new Date() })
+      .where(and(
+        eq(schema.appNotifications.userId, req.user.id),
+        eq(schema.appNotifications.isRead, false),
+      ));
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Could not mark notifications as read." });
   }
 });
 

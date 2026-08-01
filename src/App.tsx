@@ -8,6 +8,8 @@ import {
   BarChart3,
   Bell,
   BellOff,
+  CheckCheck,
+  CircleAlert,
   BookOpen,
   LayoutDashboard,
   LogOut,
@@ -27,7 +29,7 @@ import AuditLogs from "./components/AuditLogs.tsx";
 import SetupGuide from "./components/SetupGuide.tsx";
 import PrivacyPolicy from "./components/PrivacyPolicy.tsx";
 import DataDeletion from "./components/DataDeletion.tsx";
-import type { Conversation } from "./types.ts";
+import type { AppNotification } from "./types.ts";
 
 const TOKEN_STORAGE_KEY = "intalent_token";
 
@@ -104,8 +106,12 @@ export default function App() {
       return Notification.permission;
     });
 
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState<number>(0);
-  const knownConversationTimes = React.useRef<Map<number, number> | null>(null);
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [targetConversationId, setTargetConversationId] = useState<number | null>(null);
+  const knownNotificationIds = React.useRef<Set<number> | null>(null);
 
   const enableNotifications = useCallback(async (): Promise<void> => {
     if (!("Notification" in window)) {
@@ -282,113 +288,97 @@ export default function App() {
     };
   }, [token, currentUser, loadProfile]);
 
+  const loadNotifications = useCallback(async (showBrowserAlerts = false): Promise<void> => {
+    if (!token || !currentUser) return;
+    setNotificationsLoading(true);
+    try {
+      const response = await fetch("/api/notifications?limit=40", {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const data = (await response.json()) as AppNotification[];
+      setNotifications(data);
+      setUnreadCount(data.filter(item => !item.isRead).length);
+
+      const currentIds = new Set(data.map(item => item.id));
+      if (showBrowserAlerts && knownNotificationIds.current && "Notification" in window && Notification.permission === "granted") {
+        data
+          .filter(item => !item.isRead && !knownNotificationIds.current?.has(item.id))
+          .slice(0, 5)
+          .forEach(item => {
+            const browserNotification = new Notification(item.title, {
+              body: item.message,
+              icon: "/favicon.ico",
+              tag: `app-notification-${item.id}`,
+            });
+            browserNotification.onclick = () => {
+              window.focus();
+              setActivePage("inbox");
+              if (item.conversationId) setTargetConversationId(item.conversationId);
+              browserNotification.close();
+            };
+          });
+      }
+      knownNotificationIds.current = currentIds;
+    } catch (error) {
+      console.error("Unable to load notifications:", error);
+    } finally {
+      setNotificationsLoading(false);
+    }
+  }, [token, currentUser]);
+
   useEffect(() => {
     if (!token || !currentUser) {
-      knownConversationTimes.current = null;
+      knownNotificationIds.current = null;
+      setNotifications([]);
       setUnreadCount(0);
       return;
     }
 
-    let stopped = false;
-
-    const checkForNewMessages = async (): Promise<void> => {
-      try {
-        const response = await fetch("/api/conversations?status=all", {
-          headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          cache: "no-store",
-        });
-
-        if (!response.ok) {
-          return;
-        }
-
-        const conversations = (await response.json()) as Array<
-          Conversation & {
-            contactName?: string | null;
-            contactPhone?: string;
-            whatsappNumberName?: string;
-          }
-        >;
-
-        if (stopped) {
-          return;
-        }
-
-        const unread = conversations.filter(
-          (conversation) => conversation.isUnread,
-        );
-        setUnreadCount(unread.length);
-
-        const latestTimes = new Map<number, number>(
-          conversations.map((conversation) => [
-            conversation.id,
-            new Date(conversation.lastMessageAt).getTime(),
-          ]),
-        );
-
-        // The first request establishes a baseline so old unread chats do not
-        // create a burst of notifications immediately after login.
-        if (knownConversationTimes.current) {
-          const newInboundConversations = unread.filter((conversation) => {
-            const timestamp = latestTimes.get(conversation.id) ?? 0;
-            const previousTimestamp =
-              knownConversationTimes.current?.get(conversation.id);
-
-            return (
-              previousTimestamp !== undefined &&
-              timestamp > previousTimestamp
-            ) || previousTimestamp === undefined;
-          });
-
-          if (
-            newInboundConversations.length > 0 &&
-            "Notification" in window &&
-            Notification.permission === "granted"
-          ) {
-            newInboundConversations.forEach((conversation) => {
-              const sender =
-                conversation.contactName ||
-                conversation.contactPhone ||
-                "New contact";
-              const notification = new Notification(
-                `New WhatsApp message from ${sender}`,
-                {
-                  body: conversation.whatsappNumberName
-                    ? `Received on ${conversation.whatsappNumberName}`
-                    : "Open InTalent Inbox to view the message.",
-                  icon: "/favicon.ico",
-                  tag: `conversation-${conversation.id}`,
-                },
-              );
-
-              notification.onclick = () => {
-                window.focus();
-                setActivePage("inbox");
-                notification.close();
-              };
-            });
-          }
-        }
-
-        knownConversationTimes.current = latestTimes;
-      } catch (error) {
-        console.error("Unable to check for new WhatsApp messages:", error);
-      }
-    };
-
-    void checkForNewMessages();
+    void loadNotifications(false);
     const intervalId = window.setInterval(() => {
-      void checkForNewMessages();
+      void loadNotifications(true);
     }, 5000);
 
-    return () => {
-      stopped = true;
-      window.clearInterval(intervalId);
-    };
-  }, [token, currentUser]);
+    return () => window.clearInterval(intervalId);
+  }, [token, currentUser, loadNotifications]);
+
+  const markNotificationRead = useCallback(async (notification: AppNotification): Promise<void> => {
+    if (!token) return;
+    if (!notification.isRead) {
+      await fetch(`/api/notifications/${notification.id}/read`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(error => console.error("Could not mark notification as read:", error));
+    }
+    setNotifications(previous => previous.map(item =>
+      item.id === notification.id ? { ...item, isRead: true, readAt: new Date().toISOString() } : item
+    ));
+    setUnreadCount(previous => Math.max(0, previous - (notification.isRead ? 0 : 1)));
+    setNotificationPanelOpen(false);
+    setActivePage("inbox");
+    if (notification.conversationId) setTargetConversationId(notification.conversationId);
+  }, [token]);
+
+  const markAllNotificationsRead = useCallback(async (): Promise<void> => {
+    if (!token) return;
+    await fetch("/api/notifications/read-all", {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(error => console.error("Could not mark notifications as read:", error));
+    setNotifications(previous => previous.map(item => ({ ...item, isRead: true, readAt: item.readAt || new Date().toISOString() })));
+    setUnreadCount(0);
+  }, [token]);
+
+  const handleNotificationBellClick = useCallback((): void => {
+    if (notificationPermission === "default") void enableNotifications();
+    setNotificationPanelOpen(previous => !previous);
+    void loadNotifications(false);
+  }, [notificationPermission, enableNotifications, loadNotifications]);
 
   const handleLoginSuccess = (
     authToken: string,
@@ -600,17 +590,11 @@ export default function App() {
             <div className="hidden xl:flex items-center gap-4">
               <button
                 type="button"
-                onClick={() => {
-                  if (notificationPermission === "default") {
-                    void enableNotifications();
-                  } else {
-                    setActivePage("inbox");
-                  }
-                }}
+                onClick={handleNotificationBellClick}
                 className="relative p-2 text-zinc-400 hover:text-emerald-300 hover:bg-emerald-950/30 rounded-xl transition cursor-pointer"
                 title={
                   notificationPermission === "granted"
-                    ? "Message notifications are enabled"
+                    ? "Open notifications"
                     : notificationPermission === "denied"
                       ? "Notifications are blocked in your browser settings"
                       : notificationPermission === "unsupported"
@@ -657,13 +641,7 @@ export default function App() {
             <div className="flex xl:hidden items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  if (notificationPermission === "default") {
-                    void enableNotifications();
-                  } else {
-                    setActivePage("inbox");
-                  }
-                }}
+                onClick={handleNotificationBellClick}
                 className="relative p-2 rounded-xl text-zinc-400 hover:bg-zinc-900"
                 aria-label="Message notifications"
               >
@@ -754,6 +732,47 @@ export default function App() {
           </div>
         )}
       </header>
+      {notificationPanelOpen && (
+        <div className="fixed right-4 top-20 z-[70] w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/[0.09] bg-[#0b1115]/[0.98] shadow-2xl backdrop-blur-xl">
+          <div className="flex items-center justify-between border-b border-white/[0.07] px-4 py-3">
+            <div>
+              <p className="text-sm font-bold text-zinc-100">Notifications</p>
+              <p className="text-[10px] text-zinc-500">Persistent recruiting inbox alerts</p>
+            </div>
+            <button type="button" onClick={() => void markAllNotificationsRead()} disabled={unreadCount === 0} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] font-semibold text-emerald-400 hover:bg-emerald-950/40 disabled:opacity-40">
+              <CheckCheck className="h-3.5 w-3.5" /> Mark all read
+            </button>
+          </div>
+          <div className="max-h-[70vh] overflow-y-auto">
+            {notificationsLoading && notifications.length === 0 ? (
+              <div className="p-6 text-center text-xs text-zinc-500">Loading notifications…</div>
+            ) : notifications.length === 0 ? (
+              <div className="p-8 text-center text-xs text-zinc-500">No notifications yet.</div>
+            ) : notifications.map(notification => (
+              <button
+                key={notification.id}
+                type="button"
+                onClick={() => void markNotificationRead(notification)}
+                className={`w-full border-b border-white/[0.05] px-4 py-3 text-left transition hover:bg-white/[0.04] ${notification.isRead ? "opacity-65" : "bg-emerald-500/[0.035]"}`}
+              >
+                <div className="flex gap-3">
+                  <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${notification.severity === "critical" ? "bg-rose-950/60 text-rose-400" : notification.severity === "warning" ? "bg-amber-950/60 text-amber-400" : notification.severity === "success" ? "bg-emerald-950/60 text-emerald-400" : "bg-sky-950/60 text-sky-400"}`}>
+                    <CircleAlert className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="truncate text-xs font-semibold text-zinc-200">{notification.title}</p>
+                      {!notification.isRead && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-emerald-400" />}
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-zinc-500">{notification.message}</p>
+                    <p className="mt-1.5 text-[9px] text-zinc-600">{new Date(notification.createdAt).toLocaleString()}</p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <main className="flex-1">
         {activePage === "dashboard" && (
@@ -769,6 +788,8 @@ export default function App() {
           <Inbox
             token={token}
             currentUser={currentUser}
+            initialConversationId={targetConversationId}
+            onInitialConversationHandled={() => setTargetConversationId(null)}
           />
         )}
 

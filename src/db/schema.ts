@@ -239,6 +239,23 @@ export const metaTemplateSyncRuns = pgTable('meta_template_sync_runs', {
   completedAt: timestamp('completed_at'),
 });
 
+
+// 15. Persistent in-app notifications for recruiters and administrators.
+export const appNotifications = pgTable('app_notifications', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  whatsappNumberId: integer('whatsapp_number_id').references(() => whatsappNumbers.id, { onDelete: 'cascade' }),
+  conversationId: integer('conversation_id').references(() => conversations.id, { onDelete: 'cascade' }),
+  type: text('type').notNull(), // new_inbound | human_handover | assignment | delivery_failed | system
+  title: text('title').notNull(),
+  message: text('message').notNull(),
+  severity: text('severity').notNull().default('info'), // info | success | warning | critical
+  dedupeKey: text('dedupe_key'),
+  isRead: boolean('is_read').notNull().default(false),
+  readAt: timestamp('read_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // --- Relations ---
 
 export const usersRelations = relations(users, ({ many }) => ({
@@ -248,6 +265,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   messagesSent: many(messages),
   auditLogs: many(auditLogs),
   metaTemplateSyncRuns: many(metaTemplateSyncRuns),
+  notifications: many(appNotifications),
 }));
 
 export const whatsappNumbersRelations = relations(whatsappNumbers, ({ many, one }) => ({
@@ -263,6 +281,7 @@ export const whatsappNumbersRelations = relations(whatsappNumbers, ({ many, one 
   quickReplies: many(quickReplies),
   metaMessageTemplates: many(metaMessageTemplates),
   metaTemplateSyncRuns: many(metaTemplateSyncRuns),
+  notifications: many(appNotifications),
 }));
 
 export const userNumberAssignmentsRelations = relations(userNumberAssignments, ({ one }) => ({
@@ -303,6 +322,23 @@ export const conversationsRelations = relations(conversations, ({ one, many }) =
   }),
   messages: many(messages),
   workflowSessions: many(workflowSessions),
+  notifications: many(appNotifications),
+}));
+
+
+export const appNotificationsRelations = relations(appNotifications, ({ one }) => ({
+  user: one(users, {
+    fields: [appNotifications.userId],
+    references: [users.id],
+  }),
+  whatsappNumber: one(whatsappNumbers, {
+    fields: [appNotifications.whatsappNumberId],
+    references: [whatsappNumbers.id],
+  }),
+  conversation: one(conversations, {
+    fields: [appNotifications.conversationId],
+    references: [conversations.id],
+  }),
 }));
 
 export const messagesRelations = relations(messages, ({ one }) => ({

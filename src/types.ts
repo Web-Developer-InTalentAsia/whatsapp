@@ -164,6 +164,21 @@ export interface AITrainingData {
   createdAt?: string;
 }
 
+
+export interface AppNotification {
+  id: number;
+  userId: number;
+  whatsappNumberId?: number | null;
+  conversationId?: number | null;
+  type: 'new_inbound' | 'human_handover' | 'assignment' | 'delivery_failed' | 'system';
+  title: string;
+  message: string;
+  severity: 'info' | 'success' | 'warning' | 'critical';
+  isRead: boolean;
+  readAt?: string | null;
+  createdAt: string;
+}
+
 export interface AuditLog {
   id: number;
   userId?: number | null;
