@@ -104,6 +104,9 @@ export const messages = pgTable('messages', {
   retryCount: integer('retry_count').notNull().default(0),
   lastRetryAt: timestamp('last_retry_at'),
   retryOfMessageId: integer('retry_of_message_id'),
+  templateName: text('template_name'),
+  templateLanguage: text('template_language'),
+  templateComponents: text('template_components'),
   agentId: integer('agent_id').references(() => users.id, { onDelete: 'set null' }),
   replyToMessageId: integer('reply_to_message_id'),
   forwardedFromMessageId: integer('forwarded_from_message_id'),
@@ -196,6 +199,22 @@ export const quickReplies = pgTable('quick_replies', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+
+// 13. Synced Meta-approved Message Templates
+export const metaMessageTemplates = pgTable('meta_message_templates', {
+  id: serial('id').primaryKey(),
+  whatsappNumberId: integer('whatsapp_number_id').references(() => whatsappNumbers.id, { onDelete: 'cascade' }).notNull(),
+  metaTemplateId: text('meta_template_id'),
+  name: text('name').notNull(),
+  language: text('language').notNull(),
+  category: text('category').notNull().default('UTILITY'),
+  status: text('status').notNull().default('PENDING'),
+  qualityScore: text('quality_score'),
+  components: text('components').notNull().default('[]'),
+  lastSyncedAt: timestamp('last_synced_at').defaultNow(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // --- Relations ---
 
 export const usersRelations = relations(users, ({ many }) => ({
@@ -217,6 +236,7 @@ export const whatsappNumbersRelations = relations(whatsappNumbers, ({ many, one 
   }),
   aiTrainingData: many(aiTrainingData),
   quickReplies: many(quickReplies),
+  metaMessageTemplates: many(metaMessageTemplates),
 }));
 
 export const userNumberAssignmentsRelations = relations(userNumberAssignments, ({ one }) => ({

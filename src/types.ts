@@ -79,7 +79,7 @@ export interface Message {
   senderName: string;
   content: string;
   messageType: 'text' | 'document' | 'cv' | 'location' | 'image' | 'video' | 'audio' | 'sticker';
-  replyType: 'manual' | 'ai' | 'workflow' | 'handover' | 'none';
+  replyType: 'manual' | 'ai' | 'workflow' | 'handover' | 'template' | 'none';
   status: 'sent' | 'delivered' | 'read' | 'received' | 'failed';
   timestamp: string;
   statusUpdatedAt?: string | null;
@@ -92,6 +92,9 @@ export interface Message {
   retryCount?: number;
   lastRetryAt?: string | null;
   retryOfMessageId?: number | null;
+  templateName?: string | null;
+  templateLanguage?: string | null;
+  templateComponents?: string | null;
   agentId?: number | null;
   replyToMessageId?: number | null;
   forwardedFromMessageId?: number | null;
@@ -177,4 +180,33 @@ export interface QuickReply {
   shortcut: string;
   message: string;
   createdAt?: string;
+}
+
+
+export interface MetaTemplateParameterDefinition {
+  key: string;
+  label: string;
+  componentType: 'header' | 'body' | 'button';
+  parameterType: 'text' | 'image' | 'video' | 'document';
+  componentIndex?: number;
+  variableIndex?: number;
+  required: boolean;
+}
+
+export interface MetaMessageTemplate {
+  id: number;
+  whatsappNumberId: number;
+  metaTemplateId?: string | null;
+  name: string;
+  language: string;
+  category: string;
+  status: string;
+  qualityScore?: string | null;
+  components: string;
+  lastSyncedAt?: string | null;
+  createdAt?: string | null;
+  previewText?: string;
+  parameterDefinitions?: MetaTemplateParameterDefinition[];
+  supported?: boolean;
+  unsupportedReason?: string | null;
 }

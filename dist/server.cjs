@@ -56,6 +56,7 @@ __export(schema_exports, {
   messageUserStates: () => messageUserStates,
   messages: () => messages,
   messagesRelations: () => messagesRelations,
+  metaMessageTemplates: () => metaMessageTemplates,
   quickReplies: () => quickReplies,
   quickRepliesRelations: () => quickRepliesRelations,
   userNumberAssignments: () => userNumberAssignments,
@@ -174,6 +175,9 @@ var messages = (0, import_pg_core.pgTable)("messages", {
   retryCount: (0, import_pg_core.integer)("retry_count").notNull().default(0),
   lastRetryAt: (0, import_pg_core.timestamp)("last_retry_at"),
   retryOfMessageId: (0, import_pg_core.integer)("retry_of_message_id"),
+  templateName: (0, import_pg_core.text)("template_name"),
+  templateLanguage: (0, import_pg_core.text)("template_language"),
+  templateComponents: (0, import_pg_core.text)("template_components"),
   agentId: (0, import_pg_core.integer)("agent_id").references(() => users.id, { onDelete: "set null" }),
   replyToMessageId: (0, import_pg_core.integer)("reply_to_message_id"),
   forwardedFromMessageId: (0, import_pg_core.integer)("forwarded_from_message_id"),
@@ -257,6 +261,19 @@ var quickReplies = (0, import_pg_core.pgTable)("quick_replies", {
   message: (0, import_pg_core.text)("message").notNull(),
   createdAt: (0, import_pg_core.timestamp)("created_at").defaultNow()
 });
+var metaMessageTemplates = (0, import_pg_core.pgTable)("meta_message_templates", {
+  id: (0, import_pg_core.serial)("id").primaryKey(),
+  whatsappNumberId: (0, import_pg_core.integer)("whatsapp_number_id").references(() => whatsappNumbers.id, { onDelete: "cascade" }).notNull(),
+  metaTemplateId: (0, import_pg_core.text)("meta_template_id"),
+  name: (0, import_pg_core.text)("name").notNull(),
+  language: (0, import_pg_core.text)("language").notNull(),
+  category: (0, import_pg_core.text)("category").notNull().default("UTILITY"),
+  status: (0, import_pg_core.text)("status").notNull().default("PENDING"),
+  qualityScore: (0, import_pg_core.text)("quality_score"),
+  components: (0, import_pg_core.text)("components").notNull().default("[]"),
+  lastSyncedAt: (0, import_pg_core.timestamp)("last_synced_at").defaultNow(),
+  createdAt: (0, import_pg_core.timestamp)("created_at").defaultNow()
+});
 var usersRelations = (0, import_drizzle_orm.relations)(users, ({ many }) => ({
   assignments: many(userNumberAssignments),
   contactsAssigned: many(contacts),
@@ -274,7 +291,8 @@ var whatsappNumbersRelations = (0, import_drizzle_orm.relations)(whatsappNumbers
     references: [aiSettings.whatsappNumberId]
   }),
   aiTrainingData: many(aiTrainingData),
-  quickReplies: many(quickReplies)
+  quickReplies: many(quickReplies),
+  metaMessageTemplates: many(metaMessageTemplates)
 }));
 var userNumberAssignmentsRelations = (0, import_drizzle_orm.relations)(userNumberAssignments, ({ one }) => ({
   user: one(users, {
@@ -1098,6 +1116,272 @@ async function sendWhatsAppTextMessage(params) {
   }
   return data;
 }
+function parseTemplateComponents(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function getPlaceholderIndexes(text2) {
+  const indexes = /* @__PURE__ */ new Set();
+  const source = String(text2 || "");
+  for (const match of source.matchAll(/\{\{(\d+)\}\}/g)) {
+    const index = Number(match[1]);
+    if (Number.isInteger(index) && index > 0) indexes.add(index);
+  }
+  return [...indexes].sort((a, b) => a - b);
+}
+function analyzeMetaTemplate(componentsValue, categoryValue) {
+  const components = parseTemplateComponents(componentsValue);
+  const definitions = [];
+  let unsupportedReason = null;
+  if (String(categoryValue || "").toUpperCase() === "AUTHENTICATION") {
+    unsupportedReason = "Authentication/OTP templates are not supported by this recruiter inbox yet.";
+  }
+  components.forEach((component, componentIndex) => {
+    const type = String(component?.type || "").toUpperCase();
+    if (type === "CAROUSEL") {
+      unsupportedReason ||= "Carousel templates are not supported by this recruiter inbox yet.";
+      return;
+    }
+    if (type === "HEADER") {
+      const format = String(component?.format || "TEXT").toUpperCase();
+      if (["IMAGE", "VIDEO", "DOCUMENT"].includes(format)) {
+        definitions.push({
+          key: "header_media",
+          label: `${format.charAt(0)}${format.slice(1).toLowerCase()} header HTTPS URL`,
+          componentType: "header",
+          parameterType: format.toLowerCase(),
+          componentIndex,
+          required: true
+        });
+      } else if (format === "TEXT") {
+        for (const variableIndex of getPlaceholderIndexes(component?.text)) {
+          definitions.push({
+            key: `header_${variableIndex}`,
+            label: `Header {{${variableIndex}}}`,
+            componentType: "header",
+            parameterType: "text",
+            componentIndex,
+            variableIndex,
+            required: true
+          });
+        }
+      } else if (format && format !== "NONE") {
+        unsupportedReason ||= `Header format ${format} is not supported.`;
+      }
+    }
+    if (type === "BODY") {
+      for (const variableIndex of getPlaceholderIndexes(component?.text)) {
+        definitions.push({
+          key: `body_${variableIndex}`,
+          label: `Body {{${variableIndex}}}`,
+          componentType: "body",
+          parameterType: "text",
+          componentIndex,
+          variableIndex,
+          required: true
+        });
+      }
+    }
+    if (type === "BUTTONS") {
+      const buttons = Array.isArray(component?.buttons) ? component.buttons : [];
+      buttons.forEach((button, buttonIndex) => {
+        const buttonType = String(button?.type || "").toUpperCase();
+        const dynamicIndexes = getPlaceholderIndexes(button?.url);
+        if (buttonType === "URL" && dynamicIndexes.length > 0) {
+          dynamicIndexes.forEach((variableIndex) => definitions.push({
+            key: `button_${buttonIndex}_${variableIndex}`,
+            label: `${String(button?.text || `Button ${buttonIndex + 1}`)} URL {{${variableIndex}}}`,
+            componentType: "button",
+            parameterType: "text",
+            componentIndex: buttonIndex,
+            variableIndex,
+            required: true
+          }));
+        }
+      });
+    }
+  });
+  return {
+    components,
+    definitions,
+    supported: !unsupportedReason,
+    unsupportedReason
+  };
+}
+function replaceTemplateVariables(text2, prefix, values) {
+  return String(text2 || "").replace(/\{\{(\d+)\}\}/g, (_match, numberText) => {
+    const value = String(values[`${prefix}_${numberText}`] || "").trim();
+    return value || `{{${numberText}}}`;
+  });
+}
+function renderMetaTemplatePreview(componentsValue, values = {}) {
+  const components = parseTemplateComponents(componentsValue);
+  const lines = [];
+  for (const component of components) {
+    const type = String(component?.type || "").toUpperCase();
+    if (type === "HEADER") {
+      const format = String(component?.format || "TEXT").toUpperCase();
+      if (format === "TEXT" && component?.text) {
+        lines.push(replaceTemplateVariables(component.text, "header", values));
+      } else if (["IMAGE", "VIDEO", "DOCUMENT"].includes(format)) {
+        lines.push(`[${format.toLowerCase()} header]`);
+      }
+    } else if (type === "BODY" && component?.text) {
+      lines.push(replaceTemplateVariables(component.text, "body", values));
+    } else if (type === "FOOTER" && component?.text) {
+      lines.push(String(component.text));
+    } else if (type === "BUTTONS" && Array.isArray(component?.buttons)) {
+      const buttonLabels = component.buttons.map((button) => String(button?.text || "").trim()).filter(Boolean);
+      if (buttonLabels.length) lines.push(`Buttons: ${buttonLabels.join(" | ")}`);
+    }
+  }
+  return lines.join("\n\n").trim() || "Approved WhatsApp template";
+}
+function buildMetaTemplateSendComponents(componentsValue, values, categoryValue) {
+  const analysis = analyzeMetaTemplate(componentsValue, categoryValue);
+  if (!analysis.supported) {
+    throw new Error(analysis.unsupportedReason || "This template type is not supported.");
+  }
+  for (const definition of analysis.definitions) {
+    const value = String(values[definition.key] || "").trim();
+    if (definition.required && !value) {
+      throw new Error(`Template value is required: ${definition.label}.`);
+    }
+  }
+  const outbound = [];
+  const headerTextDefinitions = analysis.definitions.filter((item) => item.componentType === "header" && item.parameterType === "text").sort((a, b) => Number(a.variableIndex || 0) - Number(b.variableIndex || 0));
+  const headerMedia = analysis.definitions.find(
+    (item) => item.componentType === "header" && item.parameterType !== "text"
+  );
+  if (headerMedia) {
+    const url = String(values[headerMedia.key] || "").trim();
+    if (!/^https:\/\//i.test(url)) {
+      throw new Error("Template media header must use a public HTTPS URL.");
+    }
+    outbound.push({
+      type: "header",
+      parameters: [{
+        type: headerMedia.parameterType,
+        [headerMedia.parameterType]: { link: url }
+      }]
+    });
+  } else if (headerTextDefinitions.length) {
+    outbound.push({
+      type: "header",
+      parameters: headerTextDefinitions.map((item) => ({
+        type: "text",
+        text: String(values[item.key]).trim()
+      }))
+    });
+  }
+  const bodyDefinitions = analysis.definitions.filter((item) => item.componentType === "body").sort((a, b) => Number(a.variableIndex || 0) - Number(b.variableIndex || 0));
+  if (bodyDefinitions.length) {
+    outbound.push({
+      type: "body",
+      parameters: bodyDefinitions.map((item) => ({
+        type: "text",
+        text: String(values[item.key]).trim()
+      }))
+    });
+  }
+  const buttonGroups = /* @__PURE__ */ new Map();
+  for (const definition of analysis.definitions.filter((item) => item.componentType === "button")) {
+    const buttonIndex = Number(definition.componentIndex || 0);
+    const group = buttonGroups.get(buttonIndex) || [];
+    group.push(definition);
+    buttonGroups.set(buttonIndex, group);
+  }
+  for (const [buttonIndex, definitions] of buttonGroups.entries()) {
+    definitions.sort((a, b) => Number(a.variableIndex || 0) - Number(b.variableIndex || 0));
+    outbound.push({
+      type: "button",
+      sub_type: "url",
+      index: String(buttonIndex),
+      parameters: definitions.map((item) => ({
+        type: "text",
+        text: String(values[item.key]).trim()
+      }))
+    });
+  }
+  return outbound;
+}
+async function sendWhatsAppTemplateMessage(params) {
+  const phoneNumberId = String(params.phoneNumberId || "").trim();
+  const accessToken = String(params.accessToken || "").trim();
+  const to = normalizeWhatsAppNumber(params.to);
+  const templateName = String(params.templateName || "").trim();
+  const language = String(params.language || "").trim();
+  if (!phoneNumberId || !accessToken) {
+    throw new Error("Phone Number ID or Access Token is missing in WhatsApp settings.");
+  }
+  if (!to) throw new Error("Recipient WhatsApp number is invalid.");
+  if (!templateName || !language) throw new Error("Template name or language is missing.");
+  const response = await fetch(
+    `https://graph.facebook.com/${META_GRAPH_VERSION}/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: language },
+          ...Array.isArray(params.components) && params.components.length ? { components: params.components } : {}
+        }
+      })
+    }
+  );
+  const data = await parseMetaResponse(response);
+  if (!response.ok) throwMetaApiError(data, response.status);
+  return data;
+}
+async function fetchMetaMessageTemplates(params) {
+  const wabaId = String(params.wabaId || "").trim();
+  const accessToken = String(params.accessToken || "").trim();
+  if (!wabaId || !accessToken) {
+    throw new Error("WABA ID or Access Token is missing in WhatsApp settings.");
+  }
+  const collected = [];
+  let pageUrl = `https://graph.facebook.com/${META_GRAPH_VERSION}/${wabaId}/message_templates?fields=id,name,status,category,language,components,quality_score&limit=250`;
+  let pages = 0;
+  while (pageUrl && pages < 10) {
+    const response = await fetch(pageUrl, {
+      method: "GET",
+      signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const data = await parseMetaResponse(response);
+    if (!response.ok) throwMetaApiError(data, response.status);
+    if (Array.isArray(data?.data)) collected.push(...data.data);
+    const next = String(data?.paging?.next || "").trim();
+    pageUrl = next && next.startsWith("https://graph.facebook.com/") ? next : null;
+    pages += 1;
+  }
+  return collected;
+}
+function serializeTemplateForClient(template) {
+  const analysis = analyzeMetaTemplate(template.components, template.category);
+  return {
+    ...template,
+    previewText: renderMetaTemplatePreview(template.components),
+    parameterDefinitions: analysis.definitions,
+    supported: analysis.supported,
+    unsupportedReason: analysis.unsupportedReason
+  };
+}
 var META_SUCCESS_STATUS_RANK = {
   sent: 1,
   delivered: 2,
@@ -1436,7 +1720,29 @@ async function ensureMessageActionSchema() {
       ADD COLUMN IF NOT EXISTS failure_details text,
       ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS last_retry_at timestamp,
-      ADD COLUMN IF NOT EXISTS retry_of_message_id integer
+      ADD COLUMN IF NOT EXISTS retry_of_message_id integer,
+      ADD COLUMN IF NOT EXISTS template_name text,
+      ADD COLUMN IF NOT EXISTS template_language text,
+      ADD COLUMN IF NOT EXISTS template_components text
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE TABLE IF NOT EXISTS meta_message_templates (
+      id serial PRIMARY KEY,
+      whatsapp_number_id integer NOT NULL REFERENCES whatsapp_numbers(id) ON DELETE CASCADE,
+      meta_template_id text,
+      name text NOT NULL,
+      language text NOT NULL,
+      category text NOT NULL DEFAULT 'UTILITY',
+      status text NOT NULL DEFAULT 'PENDING',
+      quality_score text,
+      components text NOT NULL DEFAULT '[]',
+      last_synced_at timestamp DEFAULT now(),
+      created_at timestamp DEFAULT now()
+    )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_message_templates_line_name_language
+      ON meta_message_templates (whatsapp_number_id, name, language)
   `);
   await db.execute(import_drizzle_orm2.sql`
     UPDATE messages
@@ -2148,6 +2454,189 @@ app.delete("/api/whatsapp_numbers/:id/quick-replies/:replyId", authenticateJWT, 
     res.json({ success: true, message: "Quick reply deleted." });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+app.get("/api/whatsapp_numbers/:id/message-templates", authenticateJWT, async (req, res) => {
+  const whatsappNumberId = Number(req.params.id);
+  if (!Number.isInteger(whatsappNumberId)) {
+    return res.status(400).json({ error: "Invalid WhatsApp number ID." });
+  }
+  try {
+    const templates = await db.select().from(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId)).orderBy((0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.name), (0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.language));
+    return res.json(templates.map(serializeTemplateForClient));
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Could not load Meta templates." });
+  }
+});
+app.post(
+  "/api/whatsapp_numbers/:id/message-templates/sync",
+  authenticateJWT,
+  requireRoles(["super_admin", "admin"]),
+  async (req, res) => {
+    const whatsappNumberId = Number(req.params.id);
+    if (!Number.isInteger(whatsappNumberId)) {
+      return res.status(400).json({ error: "Invalid WhatsApp number ID." });
+    }
+    try {
+      const [whatsappNumber] = await db.select().from(schema_exports.whatsappNumbers).where((0, import_drizzle_orm2.eq)(schema_exports.whatsappNumbers.id, whatsappNumberId)).limit(1);
+      if (!whatsappNumber) return res.status(404).json({ error: "WhatsApp number not found." });
+      if (!whatsappNumber.wabaId || !whatsappNumber.accessToken) {
+        return res.status(400).json({ error: "WABA ID or Permanent Access Token is missing." });
+      }
+      const metaTemplates = await fetchMetaMessageTemplates({
+        wabaId: whatsappNumber.wabaId,
+        accessToken: whatsappNumber.accessToken
+      });
+      const syncedAt = /* @__PURE__ */ new Date();
+      await db.transaction(async (tx) => {
+        await tx.delete(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId));
+        if (metaTemplates.length) {
+          await tx.insert(schema_exports.metaMessageTemplates).values(metaTemplates.map((template) => ({
+            whatsappNumberId,
+            metaTemplateId: String(template?.id || "").trim() || null,
+            name: String(template?.name || "").trim(),
+            language: String(template?.language || "").trim(),
+            category: String(template?.category || "UTILITY").trim().toUpperCase(),
+            status: String(template?.status || "PENDING").trim().toUpperCase(),
+            qualityScore: template?.quality_score == null ? null : typeof template.quality_score === "string" ? template.quality_score : JSON.stringify(template.quality_score),
+            components: JSON.stringify(Array.isArray(template?.components) ? template.components : []),
+            lastSyncedAt: syncedAt
+          })));
+        }
+      });
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Meta Templates Synced",
+        `Synced ${metaTemplates.length} WhatsApp templates for line ${whatsappNumber.displayName}.`
+      );
+      const templates = await db.select().from(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId)).orderBy((0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.name), (0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.language));
+      return res.json({
+        success: true,
+        count: templates.length,
+        approvedCount: templates.filter((item) => item.status === "APPROVED").length,
+        templates: templates.map(serializeTemplateForClient)
+      });
+    } catch (error) {
+      const routeError = getMetaRouteError(error);
+      return res.status(routeError.status).json(routeError.body);
+    }
+  }
+);
+app.post("/api/conversations/:id/send-template", authenticateJWT, async (req, res) => {
+  const conversationId = Number(req.params.id);
+  const templateId = Number(req.body?.templateId);
+  const parameterValues = req.body?.parameterValues && typeof req.body.parameterValues === "object" ? req.body.parameterValues : {};
+  if (!Number.isInteger(conversationId) || !Number.isInteger(templateId)) {
+    return res.status(400).json({ error: "Invalid conversation or template ID." });
+  }
+  try {
+    const [conversation] = await db.select().from(schema_exports.conversations).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conversationId)).limit(1);
+    if (!conversation) return res.status(404).json({ error: "Conversation not found." });
+    const [contact] = await db.select().from(schema_exports.contacts).where((0, import_drizzle_orm2.eq)(schema_exports.contacts.id, conversation.contactId)).limit(1);
+    if (!contact) return res.status(404).json({ error: "Contact not found." });
+    const [whatsappNumber] = await db.select().from(schema_exports.whatsappNumbers).where((0, import_drizzle_orm2.eq)(schema_exports.whatsappNumbers.id, conversation.whatsappNumberId)).limit(1);
+    if (!whatsappNumber) return res.status(404).json({ error: "WhatsApp number not found." });
+    if (!whatsappNumber.isActive) return res.status(400).json({ error: "This WhatsApp number is inactive." });
+    const [template] = await db.select().from(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.and)(
+      (0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.id, templateId),
+      (0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, conversation.whatsappNumberId)
+    )).limit(1);
+    if (!template) return res.status(404).json({ error: "Synced Meta template not found for this line." });
+    if (String(template.status).toUpperCase() !== "APPROVED") {
+      return res.status(409).json({ error: `Template ${template.name} is not approved by Meta.` });
+    }
+    const outboundComponents = buildMetaTemplateSendComponents(
+      template.components,
+      parameterValues,
+      template.category
+    );
+    const preview = renderMetaTemplatePreview(template.components, parameterValues);
+    const sentAt = /* @__PURE__ */ new Date();
+    try {
+      const metaResult = await sendWhatsAppTemplateMessage({
+        phoneNumberId: whatsappNumber.phoneNumberId,
+        accessToken: whatsappNumber.accessToken,
+        to: contact.phoneNumber,
+        templateName: template.name,
+        language: template.language,
+        components: outboundComponents
+      });
+      const sentMetaMessageId = String(metaResult?.messages?.[0]?.id || "").trim() || null;
+      const [message] = await db.insert(schema_exports.messages).values({
+        conversationId,
+        sender: "agent",
+        senderName: req.user.name,
+        content: preview,
+        messageType: "text",
+        replyType: "template",
+        status: "sent",
+        timestamp: sentAt,
+        statusUpdatedAt: sentAt,
+        agentId: req.user.id,
+        metaMessageId: sentMetaMessageId,
+        templateName: template.name,
+        templateLanguage: template.language,
+        templateComponents: JSON.stringify(outboundComponents)
+      }).returning();
+      let nextStatus = conversation.status;
+      if (conversation.status === "workflow_active") {
+        await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: sentAt }).where((0, import_drizzle_orm2.and)(
+          (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.conversationId, conversationId),
+          (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.isActive, true)
+        ));
+        nextStatus = "human_handover";
+      }
+      const conversationUpdates = {
+        lastMessageAt: sentAt,
+        isUnread: false,
+        status: nextStatus
+      };
+      if (nextStatus === "human_handover" && !conversation.assignedUserId) {
+        conversationUpdates.assignedUserId = req.user.id;
+      }
+      await db.update(schema_exports.conversations).set(conversationUpdates).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conversationId));
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Template Message Sent",
+        `Sent approved Meta template ${template.name} (${template.language}) to ${contact.phoneNumber}.`
+      );
+      return res.json(message);
+    } catch (metaError) {
+      const failedAt = /* @__PURE__ */ new Date();
+      const failure = getThrownDeliveryFailure(metaError);
+      const [failedMessage] = await db.insert(schema_exports.messages).values({
+        conversationId,
+        sender: "agent",
+        senderName: req.user.name,
+        content: preview,
+        messageType: "text",
+        replyType: "template",
+        status: "failed",
+        timestamp: failedAt,
+        statusUpdatedAt: failedAt,
+        failedAt,
+        failureCode: failure.code,
+        failureTitle: failure.title,
+        failureDetails: failure.details,
+        agentId: req.user.id,
+        templateName: template.name,
+        templateLanguage: template.language,
+        templateComponents: JSON.stringify(outboundComponents)
+      }).returning();
+      await db.update(schema_exports.conversations).set({ lastMessageAt: failedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conversationId));
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Template Message Failed",
+        `Failed to send template ${template.name}: ${failure.details}`
+      );
+      const routeError = getMetaRouteError(metaError);
+      return res.status(routeError.status).json({ ...routeError.body, message: failedMessage });
+    }
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Could not send the template message." });
   }
 });
 app.get("/api/conversations", authenticateJWT, async (req, res) => {
@@ -3097,7 +3586,8 @@ app.post("/api/messages/:id/retry", authenticateJWT, async (req, res) => {
     if (failedMessage.status !== "failed") {
       return res.status(400).json({ error: "Only failed outgoing messages can be retried." });
     }
-    if (failedMessage.messageType !== "text") {
+    const isTemplateRetry = failedMessage.replyType === "template" && Boolean(failedMessage.templateName && failedMessage.templateLanguage);
+    if (failedMessage.messageType !== "text" && !isTemplateRetry) {
       return res.status(400).json({
         error: "Attachments cannot be retried automatically. Please attach the file again and send a new message."
       });
@@ -3120,7 +3610,7 @@ app.post("/api/messages/:id/retry", authenticateJWT, async (req, res) => {
     const [conversation] = await db.select().from(schema_exports.conversations).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, failedMessage.conversationId)).limit(1);
     if (!conversation) return res.status(404).json({ error: "Conversation not found." });
     const serviceWindow = getWhatsAppServiceWindowState(conversation.lastInboundAt);
-    if (!serviceWindow.isOpen) {
+    if (!serviceWindow.isOpen && !isTemplateRetry) {
       await auditLog(
         req.user.id,
         req.user.email,
@@ -3153,7 +3643,15 @@ app.post("/api/messages/:id/retry", authenticateJWT, async (req, res) => {
     const retryAt = /* @__PURE__ */ new Date();
     const nextRetryCount = currentRetryCount + 1;
     try {
-      const metaResult = await sendWhatsAppTextMessage({
+      const storedTemplateComponents = parseTemplateComponents(failedMessage.templateComponents);
+      const metaResult = isTemplateRetry ? await sendWhatsAppTemplateMessage({
+        phoneNumberId: whatsappNumber.phoneNumberId,
+        accessToken: whatsappNumber.accessToken,
+        to: contact.phoneNumber,
+        templateName: String(failedMessage.templateName),
+        language: String(failedMessage.templateLanguage),
+        components: storedTemplateComponents
+      }) : await sendWhatsAppTextMessage({
         phoneNumberId: whatsappNumber.phoneNumberId,
         accessToken: whatsappNumber.accessToken,
         to: contact.phoneNumber,
@@ -3176,7 +3674,10 @@ app.post("/api/messages/:id/retry", authenticateJWT, async (req, res) => {
         forwardedFromMessageId: failedMessage.forwardedFromMessageId || null,
         metaMessageId: sentMetaMessageId,
         replyContextMetaMessageId: replyToMetaMessageId,
-        retryOfMessageId: failedMessage.id
+        retryOfMessageId: failedMessage.id,
+        templateName: failedMessage.templateName || null,
+        templateLanguage: failedMessage.templateLanguage || null,
+        templateComponents: failedMessage.templateComponents || null
       }).returning();
       await db.update(schema_exports.messages).set({ retryCount: nextRetryCount, lastRetryAt: retryAt }).where((0, import_drizzle_orm2.eq)(schema_exports.messages.id, failedMessage.id));
       await db.update(schema_exports.conversations).set({ lastMessageAt: retryAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conversation.id));

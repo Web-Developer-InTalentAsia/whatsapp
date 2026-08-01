@@ -6,7 +6,7 @@ import {
   MoreVertical, Reply, Forward, Pin, Star, X
   , Mic, Square, FileText, Download
 } from "lucide-react";
-import { Contact, Conversation, Message } from "../types.ts";
+import { Contact, Conversation, Message, MetaMessageTemplate } from "../types.ts";
 
 interface InboxProps {
   token: string;
@@ -145,6 +145,16 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const [showQuickRepliesButtonMenu, setShowQuickRepliesButtonMenu] = useState(false);
   const [filteredReplies, setFilteredReplies] = useState<any[]>([]);
   const [activeReplyIndex, setActiveReplyIndex] = useState(0);
+
+  // Synced Meta-approved templates
+  const [metaTemplates, setMetaTemplates] = useState<MetaMessageTemplate[]>([]);
+  const [loadingMetaTemplates, setLoadingMetaTemplates] = useState(false);
+  const [syncingMetaTemplates, setSyncingMetaTemplates] = useState(false);
+  const [showMetaTemplatePanel, setShowMetaTemplatePanel] = useState(false);
+  const [selectedMetaTemplate, setSelectedMetaTemplate] = useState<MetaMessageTemplate | null>(null);
+  const [metaTemplateValues, setMetaTemplateValues] = useState<Record<string, string>>({});
+  const [metaTemplateSearch, setMetaTemplateSearch] = useState("");
+  const [sendingMetaTemplate, setSendingMetaTemplate] = useState(false);
 
   // AI suggestions state
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -332,6 +342,10 @@ export default function Inbox({ token, currentUser }: InboxProps) {
     setSuggestionSourceSummary("");
     setContact(null);
     setReplyText("");
+    setShowMetaTemplatePanel(false);
+    setSelectedMetaTemplate(null);
+    setMetaTemplateValues({});
+    setMetaTemplateSearch("");
 
     try {
       // 1. Fetch details
@@ -373,10 +387,106 @@ export default function Inbox({ token, currentUser }: InboxProps) {
         setQuickReplies(qrData);
         setFilteredReplies(qrData);
       }
+
+
+      // 5. Fetch Meta-approved message templates synced for this line
+      setLoadingMetaTemplates(true);
+      const templateRes = await fetch(`/api/whatsapp_numbers/${conv.whatsappNumberId}/message-templates`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (templateRes.ok) {
+        const templateData = await templateRes.json();
+        setMetaTemplates(Array.isArray(templateData) ? templateData : []);
+      } else {
+        setMetaTemplates([]);
+      }
+      setLoadingMetaTemplates(false);
     } catch (err) {
       console.error("Error loading chat details:", err);
     } finally {
       setLoadingChat(false);
+    }
+  };
+
+  const handleSyncMetaTemplates = async () => {
+    if (!selectedConversation || syncingMetaTemplates) return;
+    setSyncingMetaTemplates(true);
+    try {
+      const response = await fetch(
+        `/api/whatsapp_numbers/${selectedConversation.whatsappNumberId}/message-templates/sync`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        alert(data.error || "Could not sync Meta templates.");
+        return;
+      }
+      setMetaTemplates(Array.isArray(data.templates) ? data.templates : []);
+      setSelectedMetaTemplate(null);
+      setMetaTemplateValues({});
+      alert(`Synced ${data.count || 0} templates (${data.approvedCount || 0} approved).`);
+    } catch (error) {
+      console.error("Template sync error:", error);
+      alert("Could not reach Meta template sync service.");
+    } finally {
+      setSyncingMetaTemplates(false);
+    }
+  };
+
+  const handleChooseMetaTemplate = (template: MetaMessageTemplate) => {
+    if (template.status !== "APPROVED" || template.supported === false) return;
+    setSelectedMetaTemplate(template);
+    const emptyValues: Record<string, string> = {};
+    for (const definition of template.parameterDefinitions || []) {
+      emptyValues[definition.key] = "";
+    }
+    setMetaTemplateValues(emptyValues);
+  };
+
+  const handleSendMetaTemplate = async () => {
+    if (!selectedConversation || !selectedMetaTemplate || sendingMetaTemplate) return;
+    const missing = (selectedMetaTemplate.parameterDefinitions || []).find(definition =>
+      definition.required && !String(metaTemplateValues[definition.key] || "").trim()
+    );
+    if (missing) {
+      alert(`Please enter ${missing.label}.`);
+      return;
+    }
+
+    setSendingMetaTemplate(true);
+    try {
+      const response = await fetch(`/api/conversations/${selectedConversation.id}/send-template`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          templateId: selectedMetaTemplate.id,
+          parameterValues: metaTemplateValues,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (data.message) setMessages(previous => [...previous, data.message]);
+        alert(data.error || "Could not send the approved Meta template.");
+        return;
+      }
+
+      setMessages(previous => [...previous, data]);
+      setShowMetaTemplatePanel(false);
+      setSelectedMetaTemplate(null);
+      setMetaTemplateValues({});
+      setMetaTemplateSearch("");
+      await fetchConversations(selectedConversation.id);
+    } catch (error) {
+      console.error("Template send error:", error);
+      alert("Could not send the approved Meta template.");
+    } finally {
+      setSendingMetaTemplate(false);
     }
   };
 
@@ -634,9 +744,9 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
   const handleRetryMessage = async (message: Message) => {
     if (message.status !== "failed" || retryingMessageId !== null) return;
-    if (!freeFormMessagingAllowed) {
+    if (!freeFormMessagingAllowed && message.replyType !== "template") {
       alert(
-        "This retry is blocked because the WhatsApp 24-hour customer service window is closed.",
+        "This free-form retry is blocked because the WhatsApp 24-hour customer service window is closed. Approved template retries are still allowed.",
       );
       return;
     }
@@ -1220,7 +1330,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                               <button
                                 type="button"
                                 onClick={() => void handleRetryMessage(m)}
-                                disabled={!freeFormMessagingAllowed || retryingMessageId !== null}
+                                disabled={(!freeFormMessagingAllowed && m.replyType !== "template") || retryingMessageId !== null}
                                 className="inline-flex items-center gap-1 rounded-md border border-red-800 px-2 py-0.5 text-[9px] font-semibold text-red-300 hover:bg-red-950 disabled:opacity-50"
                               >
                                 <RefreshCw className={`h-3 w-3 ${retryingMessageId === m.id ? "animate-spin" : ""}`} />
@@ -1359,7 +1469,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                                   <button
                                     type="button"
                                     onClick={() => void handleRetryMessage(m)}
-                                    disabled={!freeFormMessagingAllowed || retryingMessageId !== null}
+                                    disabled={(!freeFormMessagingAllowed && m.replyType !== "template") || retryingMessageId !== null}
                                     className="inline-flex items-center gap-1 rounded border border-red-300/50 px-1.5 py-0.5 text-[9px] font-semibold text-red-50 hover:bg-red-950/40 disabled:opacity-50"
                                   >
                                     <RefreshCw className={`h-3 w-3 ${retryingMessageId === m.id ? "animate-spin" : ""}`} />
@@ -1497,7 +1607,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                 ) : (
                   <AlertCircle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
                 )}
-                <div>
+                <div className="min-w-0 flex-1">
                   <p className={`text-[11px] font-bold ${
                     freeFormMessagingAllowed ? "text-emerald-300" : "text-amber-300"
                   }`}>
@@ -1510,10 +1620,157 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                   }`}>
                     {freeFormMessagingAllowed
                       ? `Free-form replies are allowed until ${serviceWindow.expiresAt?.toLocaleString() || "the window expires"}.`
-                      : "Free-form text, attachments, AI replies, and retries are blocked. Use an approved Meta template or wait for the contact to message again."}
+                      : "Free-form text, attachments, AI replies, and free-form retries are blocked. An approved Meta template can still be sent."}
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMetaTemplatePanel(previous => !previous)}
+                  className={`shrink-0 rounded-lg border px-3 py-1.5 text-[10px] font-bold transition ${
+                    freeFormMessagingAllowed
+                      ? "border-emerald-500/30 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-950/60"
+                      : "border-amber-500/40 bg-amber-950/35 text-amber-200 hover:bg-amber-950/60"
+                  }`}
+                >
+                  {showMetaTemplatePanel ? "Close Templates" : "Send Approved Template"}
+                </button>
               </div>
+
+              {showMetaTemplatePanel && (
+                <div className="mb-3 overflow-hidden rounded-xl border border-zinc-800 bg-[#09090b] shadow-2xl">
+                  <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
+                    <div>
+                      <div className="flex items-center gap-2 text-xs font-bold text-zinc-100">
+                        <FileText className="h-4 w-4 text-emerald-400" /> Meta-approved Message Templates
+                      </div>
+                      <p className="mt-0.5 text-[10px] text-zinc-500">
+                        Templates are created and approved in WhatsApp Manager, then synced here.
+                      </p>
+                    </div>
+                    {(["super_admin", "admin"].includes(currentUser.role)) && (
+                      <button
+                        type="button"
+                        onClick={() => void handleSyncMetaTemplates()}
+                        disabled={syncingMetaTemplates}
+                        className="flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-[10px] font-bold text-zinc-300 hover:border-emerald-700 hover:text-emerald-300 disabled:opacity-50"
+                      >
+                        <RefreshCw className={`h-3 w-3 ${syncingMetaTemplates ? "animate-spin" : ""}`} />
+                        {syncingMetaTemplates ? "Syncing" : "Sync from Meta"}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid max-h-[420px] grid-cols-1 md:grid-cols-2">
+                    <div className="border-b border-zinc-800 p-3 md:border-b-0 md:border-r">
+                      <div className="relative mb-2">
+                        <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-600" />
+                        <input
+                          value={metaTemplateSearch}
+                          onChange={event => setMetaTemplateSearch(event.target.value)}
+                          placeholder="Search approved templates..."
+                          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2 pl-9 pr-3 text-xs text-zinc-200 outline-none focus:border-emerald-700"
+                        />
+                      </div>
+                      <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                        {loadingMetaTemplates ? (
+                          <div className="py-8 text-center text-xs text-zinc-500">Loading templates…</div>
+                        ) : metaTemplates.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-zinc-800 p-4 text-center text-xs text-zinc-500">
+                            No templates are synced for this WhatsApp line.
+                          </div>
+                        ) : metaTemplates
+                            .filter(template => {
+                              const needle = metaTemplateSearch.trim().toLowerCase();
+                              return !needle || `${template.name} ${template.language} ${template.category}`.toLowerCase().includes(needle);
+                            })
+                            .map(template => {
+                              const selectable = template.status === "APPROVED" && template.supported !== false;
+                              return (
+                                <button
+                                  key={template.id}
+                                  type="button"
+                                  disabled={!selectable}
+                                  onClick={() => handleChooseMetaTemplate(template)}
+                                  className={`w-full rounded-lg border p-3 text-left transition ${
+                                    selectedMetaTemplate?.id === template.id
+                                      ? "border-emerald-600 bg-emerald-950/30"
+                                      : selectable
+                                        ? "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+                                        : "cursor-not-allowed border-zinc-900 bg-zinc-950/50 opacity-55"
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <div className="truncate text-xs font-bold text-zinc-200">{template.name}</div>
+                                      <div className="mt-0.5 text-[10px] text-zinc-500">{template.language} · {template.category}</div>
+                                    </div>
+                                    <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                                      template.status === "APPROVED"
+                                        ? "bg-emerald-950 text-emerald-400"
+                                        : template.status === "REJECTED"
+                                          ? "bg-rose-950 text-rose-400"
+                                          : "bg-amber-950 text-amber-400"
+                                    }`}>{template.status}</span>
+                                  </div>
+                                  <p className="mt-2 line-clamp-3 whitespace-pre-line text-[10px] leading-relaxed text-zinc-500">
+                                    {template.unsupportedReason || template.previewText}
+                                  </p>
+                                </button>
+                              );
+                            })}
+                      </div>
+                    </div>
+
+                    <div className="max-h-[380px] overflow-y-auto p-4">
+                      {!selectedMetaTemplate ? (
+                        <div className="flex h-full min-h-40 items-center justify-center text-center text-xs text-zinc-500">
+                          Select an approved template to preview and send it.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <div>
+                            <div className="text-xs font-bold text-zinc-100">{selectedMetaTemplate.name}</div>
+                            <div className="text-[10px] text-zinc-500">{selectedMetaTemplate.language} · {selectedMetaTemplate.category}</div>
+                          </div>
+
+                          <div className="whitespace-pre-line rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-300">
+                            {selectedMetaTemplate.previewText}
+                          </div>
+
+                          {(selectedMetaTemplate.parameterDefinitions || []).map(definition => (
+                            <label key={definition.key} className="block">
+                              <span className="mb-1 block text-[10px] font-semibold text-zinc-400">{definition.label}</span>
+                              <input
+                                type={definition.parameterType === "text" ? "text" : "url"}
+                                value={metaTemplateValues[definition.key] || ""}
+                                onChange={event => setMetaTemplateValues(previous => ({
+                                  ...previous,
+                                  [definition.key]: event.target.value,
+                                }))}
+                                placeholder={definition.parameterType === "text" ? "Enter approved value" : "https://..."}
+                                className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-emerald-700"
+                              />
+                            </label>
+                          ))}
+
+                          <button
+                            type="button"
+                            onClick={() => void handleSendMetaTemplate()}
+                            disabled={sendingMetaTemplate}
+                            className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-500"
+                          >
+                            {sendingMetaTemplate ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                            {sendingMetaTemplate ? "Sending Template" : "Send Approved Template"}
+                          </button>
+                          <p className="text-[9px] leading-relaxed text-zinc-600">
+                            This can be sent even when the 24-hour service window is closed. Meta may charge according to the template category and destination.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {replyingTo && (
                 <div className="mb-2 flex items-stretch rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800">
