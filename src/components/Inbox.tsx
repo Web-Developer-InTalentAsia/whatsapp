@@ -154,6 +154,8 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const [selectedMetaTemplate, setSelectedMetaTemplate] = useState<MetaMessageTemplate | null>(null);
   const [metaTemplateValues, setMetaTemplateValues] = useState<Record<string, string>>({});
   const [metaTemplateSearch, setMetaTemplateSearch] = useState("");
+  const [metaTemplateStatusFilter, setMetaTemplateStatusFilter] = useState("active");
+  const [metaTemplateSyncNotice, setMetaTemplateSyncNotice] = useState("");
   const [sendingMetaTemplate, setSendingMetaTemplate] = useState(false);
 
   // AI suggestions state
@@ -400,6 +402,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       } else {
         setMetaTemplates([]);
       }
+      setMetaTemplateSyncNotice("");
       setLoadingMetaTemplates(false);
     } catch (err) {
       console.error("Error loading chat details:", err);
@@ -411,6 +414,7 @@ export default function Inbox({ token, currentUser }: InboxProps) {
   const handleSyncMetaTemplates = async () => {
     if (!selectedConversation || syncingMetaTemplates) return;
     setSyncingMetaTemplates(true);
+    setMetaTemplateSyncNotice("");
     try {
       const response = await fetch(
         `/api/whatsapp_numbers/${selectedConversation.whatsappNumberId}/message-templates/sync`,
@@ -421,23 +425,25 @@ export default function Inbox({ token, currentUser }: InboxProps) {
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        alert(data.error || "Could not sync Meta templates.");
+        setMetaTemplateSyncNotice(`${data.error || "Could not sync Meta templates."} Existing cached templates were preserved.`);
         return;
       }
       setMetaTemplates(Array.isArray(data.templates) ? data.templates : []);
       setSelectedMetaTemplate(null);
       setMetaTemplateValues({});
-      alert(`Synced ${data.count || 0} templates (${data.approvedCount || 0} approved).`);
+      setMetaTemplateSyncNotice(
+        `Sync complete: ${data.count || 0} active, ${data.approvedCount || 0} approved, ${data.pendingCount || 0} pending, ${data.rejectedCount || 0} rejected, ${data.archivedCount || 0} archived. ${data.duplicateCount || 0} duplicate Meta records ignored.`,
+      );
     } catch (error) {
       console.error("Template sync error:", error);
-      alert("Could not reach Meta template sync service.");
+      setMetaTemplateSyncNotice("Could not reach Meta template sync service. Existing cached templates were preserved.");
     } finally {
       setSyncingMetaTemplates(false);
     }
   };
 
   const handleChooseMetaTemplate = (template: MetaMessageTemplate) => {
-    if (template.status !== "APPROVED" || template.supported === false) return;
+    if (template.canSend === false || template.status !== "APPROVED" || template.supported === false || template.isArchived) return;
     setSelectedMetaTemplate(template);
     const emptyValues: Record<string, string> = {};
     for (const definition of template.parameterDefinitions || []) {
@@ -448,6 +454,10 @@ export default function Inbox({ token, currentUser }: InboxProps) {
 
   const handleSendMetaTemplate = async () => {
     if (!selectedConversation || !selectedMetaTemplate || sendingMetaTemplate) return;
+    if (selectedMetaTemplate.canSend === false) {
+      alert(selectedMetaTemplate.sendBlockReason || "Sync this template from Meta before sending.");
+      return;
+    }
     const missing = (selectedMetaTemplate.parameterDefinitions || []).find(definition =>
       definition.required && !String(metaTemplateValues[definition.key] || "").trim()
     );
@@ -1660,16 +1670,44 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                     )}
                   </div>
 
+                  <div className="border-b border-zinc-800 px-4 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2 text-[9px] font-semibold">
+                      <span className="rounded bg-emerald-950 px-2 py-1 text-emerald-400">Approved {metaTemplates.filter(item => !item.isArchived && item.status === "APPROVED").length}</span>
+                      <span className="rounded bg-amber-950 px-2 py-1 text-amber-400">Pending {metaTemplates.filter(item => !item.isArchived && item.status === "PENDING").length}</span>
+                      <span className="rounded bg-rose-950 px-2 py-1 text-rose-400">Rejected {metaTemplates.filter(item => !item.isArchived && item.status === "REJECTED").length}</span>
+                      <span className="rounded bg-zinc-900 px-2 py-1 text-zinc-400">Archived {metaTemplates.filter(item => item.isArchived).length}</span>
+                    </div>
+                    {metaTemplateSyncNotice && (
+                      <div className={`mt-2 rounded-lg border px-3 py-2 text-[10px] leading-relaxed ${metaTemplateSyncNotice.toLowerCase().includes("complete") ? "border-emerald-900 bg-emerald-950/30 text-emerald-300" : "border-amber-900 bg-amber-950/30 text-amber-300"}`}>
+                        {metaTemplateSyncNotice}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="grid max-h-[420px] grid-cols-1 md:grid-cols-2">
                     <div className="border-b border-zinc-800 p-3 md:border-b-0 md:border-r">
-                      <div className="relative mb-2">
-                        <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-600" />
-                        <input
-                          value={metaTemplateSearch}
-                          onChange={event => setMetaTemplateSearch(event.target.value)}
-                          placeholder="Search approved templates..."
-                          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2 pl-9 pr-3 text-xs text-zinc-200 outline-none focus:border-emerald-700"
-                        />
+                      <div className="mb-2 grid grid-cols-[1fr_auto] gap-2">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-600" />
+                          <input
+                            value={metaTemplateSearch}
+                            onChange={event => setMetaTemplateSearch(event.target.value)}
+                            placeholder="Search templates..."
+                            className="w-full rounded-lg border border-zinc-800 bg-zinc-950 py-2 pl-9 pr-3 text-xs text-zinc-200 outline-none focus:border-emerald-700"
+                          />
+                        </div>
+                        <select
+                          value={metaTemplateStatusFilter}
+                          onChange={event => setMetaTemplateStatusFilter(event.target.value)}
+                          className="rounded-lg border border-zinc-800 bg-zinc-950 px-2 text-[10px] text-zinc-300 outline-none focus:border-emerald-700"
+                        >
+                          <option value="active">Active</option>
+                          <option value="APPROVED">Approved</option>
+                          <option value="PENDING">Pending</option>
+                          <option value="REJECTED">Rejected</option>
+                          <option value="archived">Archived</option>
+                          <option value="all">All</option>
+                        </select>
                       </div>
                       <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
                         {loadingMetaTemplates ? (
@@ -1681,10 +1719,15 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                         ) : metaTemplates
                             .filter(template => {
                               const needle = metaTemplateSearch.trim().toLowerCase();
-                              return !needle || `${template.name} ${template.language} ${template.category}`.toLowerCase().includes(needle);
+                              const matchesSearch = !needle || `${template.name} ${template.language} ${template.category}`.toLowerCase().includes(needle);
+                              const matchesStatus = metaTemplateStatusFilter === "all"
+                                || (metaTemplateStatusFilter === "active" && !template.isArchived)
+                                || (metaTemplateStatusFilter === "archived" && Boolean(template.isArchived))
+                                || (!template.isArchived && template.status === metaTemplateStatusFilter);
+                              return matchesSearch && matchesStatus;
                             })
                             .map(template => {
-                              const selectable = template.status === "APPROVED" && template.supported !== false;
+                              const selectable = template.canSend !== false && template.status === "APPROVED" && template.supported !== false && !template.isArchived;
                               return (
                                 <button
                                   key={template.id}
@@ -1712,8 +1755,13 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                                           : "bg-amber-950 text-amber-400"
                                     }`}>{template.status}</span>
                                   </div>
+                                  <div className="mt-1 flex flex-wrap gap-1 text-[9px]">
+                                    {template.isArchived && <span className="rounded bg-zinc-900 px-1.5 py-0.5 text-zinc-400">ARCHIVED</span>}
+                                    {template.isStale && !template.isArchived && <span className="rounded bg-amber-950 px-1.5 py-0.5 text-amber-400">SYNC REQUIRED</span>}
+                                    {template.qualityScore && <span className="rounded bg-zinc-900 px-1.5 py-0.5 text-zinc-400">Quality {template.qualityScore}</span>}
+                                  </div>
                                   <p className="mt-2 line-clamp-3 whitespace-pre-line text-[10px] leading-relaxed text-zinc-500">
-                                    {template.unsupportedReason || template.previewText}
+                                    {template.sendBlockReason || template.unsupportedReason || template.previewText}
                                   </p>
                                 </button>
                               );
@@ -1753,10 +1801,16 @@ export default function Inbox({ token, currentUser }: InboxProps) {
                             </label>
                           ))}
 
+                          {selectedMetaTemplate.sendBlockReason && (
+                            <div className="rounded-lg border border-amber-900 bg-amber-950/30 px-3 py-2 text-[10px] leading-relaxed text-amber-300">
+                              {selectedMetaTemplate.sendBlockReason}
+                            </div>
+                          )}
+
                           <button
                             type="button"
                             onClick={() => void handleSendMetaTemplate()}
-                            disabled={sendingMetaTemplate}
+                            disabled={sendingMetaTemplate || selectedMetaTemplate.canSend === false}
                             className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-emerald-500 disabled:bg-zinc-800 disabled:text-zinc-500"
                           >
                             {sendingMetaTemplate ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}

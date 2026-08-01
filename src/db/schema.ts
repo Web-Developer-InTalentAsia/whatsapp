@@ -211,8 +211,32 @@ export const metaMessageTemplates = pgTable('meta_message_templates', {
   status: text('status').notNull().default('PENDING'),
   qualityScore: text('quality_score'),
   components: text('components').notNull().default('[]'),
+  syncFingerprint: text('sync_fingerprint'),
+  isArchived: boolean('is_archived').notNull().default(false),
+  lastSeenAt: timestamp('last_seen_at').defaultNow(),
+  lastStatusChangedAt: timestamp('last_status_changed_at'),
   lastSyncedAt: timestamp('last_synced_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 14. Meta template synchronization runs. Failed syncs are recorded without
+// deleting the last known-good template cache.
+export const metaTemplateSyncRuns = pgTable('meta_template_sync_runs', {
+  id: serial('id').primaryKey(),
+  whatsappNumberId: integer('whatsapp_number_id').references(() => whatsappNumbers.id, { onDelete: 'cascade' }).notNull(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  status: text('status').notNull().default('running'), // running | success | failed
+  fetchedCount: integer('fetched_count').notNull().default(0),
+  uniqueCount: integer('unique_count').notNull().default(0),
+  duplicateCount: integer('duplicate_count').notNull().default(0),
+  approvedCount: integer('approved_count').notNull().default(0),
+  pendingCount: integer('pending_count').notNull().default(0),
+  rejectedCount: integer('rejected_count').notNull().default(0),
+  archivedCount: integer('archived_count').notNull().default(0),
+  errorCode: text('error_code'),
+  errorMessage: text('error_message'),
+  startedAt: timestamp('started_at').defaultNow(),
+  completedAt: timestamp('completed_at'),
 });
 
 // --- Relations ---
@@ -223,6 +247,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   conversationsAssigned: many(conversations),
   messagesSent: many(messages),
   auditLogs: many(auditLogs),
+  metaTemplateSyncRuns: many(metaTemplateSyncRuns),
 }));
 
 export const whatsappNumbersRelations = relations(whatsappNumbers, ({ many, one }) => ({
@@ -237,6 +262,7 @@ export const whatsappNumbersRelations = relations(whatsappNumbers, ({ many, one 
   aiTrainingData: many(aiTrainingData),
   quickReplies: many(quickReplies),
   metaMessageTemplates: many(metaMessageTemplates),
+  metaTemplateSyncRuns: many(metaTemplateSyncRuns),
 }));
 
 export const userNumberAssignmentsRelations = relations(userNumberAssignments, ({ one }) => ({

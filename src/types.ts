@@ -203,10 +203,36 @@ export interface MetaMessageTemplate {
   status: string;
   qualityScore?: string | null;
   components: string;
+  syncFingerprint?: string | null;
+  isArchived?: boolean;
+  lastSeenAt?: string | null;
+  lastStatusChangedAt?: string | null;
   lastSyncedAt?: string | null;
   createdAt?: string | null;
   previewText?: string;
   parameterDefinitions?: MetaTemplateParameterDefinition[];
   supported?: boolean;
   unsupportedReason?: string | null;
+  syncAgeMinutes?: number | null;
+  isStale?: boolean;
+  canSend?: boolean;
+  sendBlockReason?: string | null;
+}
+
+export interface MetaTemplateSyncRun {
+  id: number;
+  whatsappNumberId: number;
+  userId?: number | null;
+  status: 'running' | 'success' | 'failed';
+  fetchedCount: number;
+  uniqueCount: number;
+  duplicateCount: number;
+  approvedCount: number;
+  pendingCount: number;
+  rejectedCount: number;
+  archivedCount: number;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
 }

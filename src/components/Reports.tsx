@@ -21,6 +21,15 @@ interface MessageReport {
   content: string;
   sender: string;
   replyType: string;
+  status: string;
+  metaMessageId?: string | null;
+  failureCode?: string | null;
+  failureTitle?: string | null;
+  failureDetails?: string | null;
+  retryCount?: number;
+  retryOfMessageId?: number | null;
+  templateName?: string | null;
+  templateLanguage?: string | null;
   timestamp: string;
 }
 
@@ -37,6 +46,7 @@ export default function Reports({ token, currentUser }: ReportsProps) {
   const [lineFilter, setLineFilter] = useState("all");
   const [replyTypeFilter, setReplyTypeFilter] = useState("all");
   const [senderFilter, setSenderFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
 
   const [numbersList, setNumbersList] = useState<any[]>([]);
@@ -86,12 +96,13 @@ export default function Reports({ token, currentUser }: ReportsProps) {
     const matchesLine = lineFilter === "all" || m.whatsappNumberName === lineFilter;
     const matchesReplyType = replyTypeFilter === "all" || m.replyType === replyTypeFilter;
     const matchesSender = senderFilter === "all" || m.sender === senderFilter;
+    const matchesStatus = statusFilter === "all" || m.status === statusFilter;
     const matchesSearch = !search || 
       m.contactName?.toLowerCase().includes(search.toLowerCase()) ||
       m.contactPhone?.includes(search) ||
       m.content?.toLowerCase().includes(search.toLowerCase());
 
-    return matchesLine && matchesReplyType && matchesSender && matchesSearch;
+    return matchesLine && matchesReplyType && matchesSender && matchesStatus && matchesSearch;
   });
 
   // Export to CSV Function
@@ -101,7 +112,7 @@ export default function Reports({ token, currentUser }: ReportsProps) {
       return;
     }
 
-    const headers = ["Message ID", "Contact Name", "Contact Phone", "WhatsApp Line", "Content", "Sender Type", "Reply Type", "Timestamp"];
+    const headers = ["Message ID", "Contact Name", "Contact Phone", "WhatsApp Line", "Content", "Sender Type", "Reply Type", "Delivery Status", "Template Name", "Template Language", "Meta Message ID", "Failure Code", "Failure Details", "Retry Count", "Timestamp"];
     const rows = filteredMessages.map(m => [
       m.id,
       m.contactName || "Unknown",
@@ -110,6 +121,13 @@ export default function Reports({ token, currentUser }: ReportsProps) {
       `"${m.content.replace(/"/g, '""')}"`,
       m.sender,
       m.replyType || "N/A",
+      m.status || "N/A",
+      m.templateName || "",
+      m.templateLanguage || "",
+      m.metaMessageId || "",
+      m.failureCode || "",
+      `"${String(m.failureDetails || "").replace(/"/g, '""')}"`,
+      m.retryCount || 0,
       new Date(m.timestamp).toLocaleString()
     ]);
 
@@ -128,10 +146,12 @@ export default function Reports({ token, currentUser }: ReportsProps) {
   // Quick stats calculations
   const totalMsgs = filteredMessages.length;
   const inboundCount = filteredMessages.filter(m => m.sender === "contact").length;
-  const outboundCount = filteredMessages.filter(m => m.sender === "user").length;
+  const outboundCount = filteredMessages.filter(m => m.sender !== "contact").length;
   const aiReplies = filteredMessages.filter(m => m.replyType === "ai").length;
   const manualReplies = filteredMessages.filter(m => m.replyType === "manual").length;
   const workflowReplies = filteredMessages.filter(m => m.replyType === "workflow").length;
+  const templateReplies = filteredMessages.filter(m => m.replyType === "template").length;
+  const failedMessages = filteredMessages.filter(m => m.status === "failed").length;
 
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6 font-sans text-zinc-100">
@@ -153,7 +173,7 @@ export default function Reports({ token, currentUser }: ReportsProps) {
       </div>
 
       {/* Metrics Row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
         <div className="bg-[#0c0c0e] p-4 rounded-xl border border-zinc-800 shadow-xl">
           <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Filtered Volume</span>
           <p className="text-2xl font-bold text-zinc-100 mt-1">{totalMsgs}</p>
@@ -174,10 +194,18 @@ export default function Reports({ token, currentUser }: ReportsProps) {
           <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Workflow Autopilot</span>
           <p className="text-2xl font-bold text-emerald-400 mt-1">{workflowReplies}</p>
         </div>
+        <div className="bg-[#0c0c0e] p-4 rounded-xl border border-zinc-800 shadow-xl">
+          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Template Messages</span>
+          <p className="text-2xl font-bold text-cyan-400 mt-1">{templateReplies}</p>
+        </div>
+        <div className="bg-[#0c0c0e] p-4 rounded-xl border border-zinc-800 shadow-xl">
+          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Failed Messages</span>
+          <p className="text-2xl font-bold text-rose-400 mt-1">{failedMessages}</p>
+        </div>
       </div>
 
       {/* Filters Area */}
-      <div className="bg-[#0c0c0e] p-4 border border-zinc-800 rounded-2xl shadow-xl grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+      <div className="bg-[#0c0c0e] p-4 border border-zinc-800 rounded-2xl shadow-xl grid grid-cols-1 sm:grid-cols-5 gap-3 text-xs">
         <div>
           <span className="text-zinc-400 font-semibold block mb-1">Filter by Line</span>
           <select
@@ -204,6 +232,7 @@ export default function Reports({ token, currentUser }: ReportsProps) {
             <option value="ai">AI Suggestion</option>
             <option value="handover">Handover Notice</option>
             <option value="workflow">Workflow Autopilot</option>
+            <option value="template">Approved Template</option>
           </select>
         </div>
 
@@ -216,8 +245,24 @@ export default function Reports({ token, currentUser }: ReportsProps) {
           >
             <option value="all">All Senders</option>
             <option value="contact">Contact Only</option>
-            <option value="user">Operator Only</option>
+            <option value="agent">Recruiter Only</option>
             <option value="system">Autopilot/Workflow</option>
+          </select>
+        </div>
+
+        <div>
+          <span className="text-zinc-400 font-semibold block mb-1">Delivery Status</span>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="w-full border border-zinc-800 rounded-lg p-2 bg-zinc-900 text-zinc-100"
+          >
+            <option value="all">All Statuses</option>
+            <option value="sent">Sent</option>
+            <option value="delivered">Delivered</option>
+            <option value="read">Read</option>
+            <option value="failed">Failed</option>
+            <option value="received">Received</option>
           </select>
         </div>
 
@@ -257,7 +302,8 @@ export default function Reports({ token, currentUser }: ReportsProps) {
                   <th className="p-4">WhatsApp Line</th>
                   <th className="p-4">Message Log Content</th>
                   <th className="p-4">Category</th>
-                  <th className="p-4">Method</th>
+                  <th className="p-4">Method / Template</th>
+                  <th className="p-4">Delivery</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800">
@@ -289,12 +335,31 @@ export default function Reports({ token, currentUser }: ReportsProps) {
                     </td>
                     <td className="p-4">
                       {m.replyType && m.replyType !== "none" ? (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-900 text-zinc-300 border border-zinc-800 capitalize">
-                          {m.replyType}
-                        </span>
+                        <div className="space-y-1">
+                          <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-900 text-zinc-300 border border-zinc-800 capitalize">
+                            {m.replyType}
+                          </span>
+                          {m.templateName && (
+                            <div className="text-[10px] text-cyan-400" title={`${m.templateName} (${m.templateLanguage || ""})`}>
+                              {m.templateName} {m.templateLanguage ? `· ${m.templateLanguage}` : ""}
+                            </div>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-zinc-600">-</span>
                       )}
+                    </td>
+                    <td className="p-4">
+                      <span className={`inline-block rounded-full border px-2 py-0.5 text-[10px] font-bold capitalize ${
+                        m.status === "failed"
+                          ? "border-rose-900/60 bg-rose-950/50 text-rose-400"
+                          : m.status === "read"
+                            ? "border-sky-900/60 bg-sky-950/50 text-sky-400"
+                            : "border-zinc-800 bg-zinc-900 text-zinc-300"
+                      }`} title={m.failureDetails || m.metaMessageId || ""}>
+                        {m.status || "unknown"}
+                      </span>
+                      {m.failureCode && <div className="mt-1 text-[9px] text-rose-400">Code {m.failureCode}</div>}
                     </td>
                   </tr>
                 ))}

@@ -57,6 +57,7 @@ __export(schema_exports, {
   messages: () => messages,
   messagesRelations: () => messagesRelations,
   metaMessageTemplates: () => metaMessageTemplates,
+  metaTemplateSyncRuns: () => metaTemplateSyncRuns,
   quickReplies: () => quickReplies,
   quickRepliesRelations: () => quickRepliesRelations,
   userNumberAssignments: () => userNumberAssignments,
@@ -271,15 +272,38 @@ var metaMessageTemplates = (0, import_pg_core.pgTable)("meta_message_templates",
   status: (0, import_pg_core.text)("status").notNull().default("PENDING"),
   qualityScore: (0, import_pg_core.text)("quality_score"),
   components: (0, import_pg_core.text)("components").notNull().default("[]"),
+  syncFingerprint: (0, import_pg_core.text)("sync_fingerprint"),
+  isArchived: (0, import_pg_core.boolean)("is_archived").notNull().default(false),
+  lastSeenAt: (0, import_pg_core.timestamp)("last_seen_at").defaultNow(),
+  lastStatusChangedAt: (0, import_pg_core.timestamp)("last_status_changed_at"),
   lastSyncedAt: (0, import_pg_core.timestamp)("last_synced_at").defaultNow(),
   createdAt: (0, import_pg_core.timestamp)("created_at").defaultNow()
+});
+var metaTemplateSyncRuns = (0, import_pg_core.pgTable)("meta_template_sync_runs", {
+  id: (0, import_pg_core.serial)("id").primaryKey(),
+  whatsappNumberId: (0, import_pg_core.integer)("whatsapp_number_id").references(() => whatsappNumbers.id, { onDelete: "cascade" }).notNull(),
+  userId: (0, import_pg_core.integer)("user_id").references(() => users.id, { onDelete: "set null" }),
+  status: (0, import_pg_core.text)("status").notNull().default("running"),
+  // running | success | failed
+  fetchedCount: (0, import_pg_core.integer)("fetched_count").notNull().default(0),
+  uniqueCount: (0, import_pg_core.integer)("unique_count").notNull().default(0),
+  duplicateCount: (0, import_pg_core.integer)("duplicate_count").notNull().default(0),
+  approvedCount: (0, import_pg_core.integer)("approved_count").notNull().default(0),
+  pendingCount: (0, import_pg_core.integer)("pending_count").notNull().default(0),
+  rejectedCount: (0, import_pg_core.integer)("rejected_count").notNull().default(0),
+  archivedCount: (0, import_pg_core.integer)("archived_count").notNull().default(0),
+  errorCode: (0, import_pg_core.text)("error_code"),
+  errorMessage: (0, import_pg_core.text)("error_message"),
+  startedAt: (0, import_pg_core.timestamp)("started_at").defaultNow(),
+  completedAt: (0, import_pg_core.timestamp)("completed_at")
 });
 var usersRelations = (0, import_drizzle_orm.relations)(users, ({ many }) => ({
   assignments: many(userNumberAssignments),
   contactsAssigned: many(contacts),
   conversationsAssigned: many(conversations),
   messagesSent: many(messages),
-  auditLogs: many(auditLogs)
+  auditLogs: many(auditLogs),
+  metaTemplateSyncRuns: many(metaTemplateSyncRuns)
 }));
 var whatsappNumbersRelations = (0, import_drizzle_orm.relations)(whatsappNumbers, ({ many, one }) => ({
   assignments: many(userNumberAssignments),
@@ -292,7 +316,8 @@ var whatsappNumbersRelations = (0, import_drizzle_orm.relations)(whatsappNumbers
   }),
   aiTrainingData: many(aiTrainingData),
   quickReplies: many(quickReplies),
-  metaMessageTemplates: many(metaMessageTemplates)
+  metaMessageTemplates: many(metaMessageTemplates),
+  metaTemplateSyncRuns: many(metaTemplateSyncRuns)
 }));
 var userNumberAssignmentsRelations = (0, import_drizzle_orm.relations)(userNumberAssignments, ({ one }) => ({
   user: one(users, {
@@ -457,6 +482,10 @@ var MESSAGE_RETRY_MIN_INTERVAL_SECONDS = Number.isFinite(configuredMessageRetryI
 var configuredServiceWindowHours = Number(process.env.WHATSAPP_SERVICE_WINDOW_HOURS || 24);
 var WHATSAPP_SERVICE_WINDOW_HOURS = Number.isFinite(configuredServiceWindowHours) ? Math.min(168, Math.max(1, configuredServiceWindowHours)) : 24;
 var WHATSAPP_SERVICE_WINDOW_MS = WHATSAPP_SERVICE_WINDOW_HOURS * 60 * 60 * 1e3;
+var configuredTemplateSyncMaxAgeMinutes = Number(process.env.TEMPLATE_SYNC_MAX_AGE_MINUTES || 1440);
+var TEMPLATE_SYNC_MAX_AGE_MINUTES = Number.isFinite(configuredTemplateSyncMaxAgeMinutes) ? Math.min(10080, Math.max(15, Math.floor(configuredTemplateSyncMaxAgeMinutes))) : 1440;
+var TEMPLATE_PARAMETER_TEXT_MAX_LENGTH = 1024;
+var TEMPLATE_PARAMETER_URL_MAX_LENGTH = 2048;
 function getWhatsAppServiceWindowState(value) {
   if (!value) {
     return {
@@ -1372,14 +1401,122 @@ async function fetchMetaMessageTemplates(params) {
   }
   return collected;
 }
+function normalizeMetaTemplate(template) {
+  const name = String(template?.name || "").trim();
+  const language = String(template?.language || "").trim();
+  if (!name || !language) return null;
+  const category = String(template?.category || "UTILITY").trim().toUpperCase();
+  const status = String(template?.status || "PENDING").trim().toUpperCase();
+  const qualityScore = template?.quality_score == null ? null : typeof template.quality_score === "string" ? template.quality_score : JSON.stringify(template.quality_score);
+  const components = JSON.stringify(Array.isArray(template?.components) ? template.components : []);
+  const metaTemplateId = String(template?.id || "").trim() || null;
+  const syncFingerprint = import_crypto.default.createHash("sha256").update(JSON.stringify({ metaTemplateId, name, language, category, status, qualityScore, components })).digest("hex");
+  return { metaTemplateId, name, language, category, status, qualityScore, components, syncFingerprint };
+}
+function dedupeMetaTemplates(metaTemplates) {
+  const unique = /* @__PURE__ */ new Map();
+  let invalidCount = 0;
+  let duplicateCount = 0;
+  for (const rawTemplate of metaTemplates) {
+    const normalized = normalizeMetaTemplate(rawTemplate);
+    if (!normalized) {
+      invalidCount += 1;
+      continue;
+    }
+    const key = `${normalized.name.toLowerCase()}::${normalized.language.toLowerCase()}`;
+    const existing = unique.get(key);
+    if (existing) {
+      duplicateCount += 1;
+      unique.set(key, {
+        ...existing,
+        ...normalized,
+        metaTemplateId: normalized.metaTemplateId || existing.metaTemplateId,
+        components: normalized.components !== "[]" ? normalized.components : existing.components
+      });
+    } else {
+      unique.set(key, normalized);
+    }
+  }
+  return { templates: [...unique.values()], duplicateCount, invalidCount };
+}
+function getTemplateSyncAgeMinutes(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / 6e4));
+}
+function isPrivateOrLocalHostname(hostnameValue) {
+  const hostname = hostnameValue.toLowerCase().replace(/^\[|\]$/g, "");
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "::1") return true;
+  if (/^127\./.test(hostname) || /^10\./.test(hostname) || /^192\.168\./.test(hostname)) return true;
+  const private172 = hostname.match(/^172\.(\d{1,3})\./);
+  if (private172) {
+    const second = Number(private172[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  if (/^169\.254\./.test(hostname) || /^0\./.test(hostname)) return true;
+  return false;
+}
+function validatePublicHttpsTemplateMediaUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("Template media header must use a valid public HTTPS URL.");
+  }
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password) {
+    throw new Error("Template media header must use a valid public HTTPS URL without embedded credentials.");
+  }
+  if (isPrivateOrLocalHostname(url.hostname)) {
+    throw new Error("Template media header URL cannot use localhost or a private network address.");
+  }
+}
+function validateMetaTemplateParameterValues(definitions, rawValues) {
+  const expectedKeys = new Set(definitions.map((item) => item.key));
+  const unexpectedKeys = Object.keys(rawValues).filter((key) => !expectedKeys.has(key));
+  if (unexpectedKeys.length > 0) {
+    throw new Error(`Unexpected template parameter(s): ${unexpectedKeys.slice(0, 5).join(", ")}.`);
+  }
+  const normalized = {};
+  for (const definition of definitions) {
+    const rawValue = rawValues[definition.key];
+    if (rawValue != null && typeof rawValue !== "string") {
+      throw new Error(`Template value must be text: ${definition.label}.`);
+    }
+    const value = String(rawValue || "").trim();
+    if (definition.required && !value) {
+      throw new Error(`Template value is required: ${definition.label}.`);
+    }
+    if (!value) continue;
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) {
+      throw new Error(`Template value contains unsupported control characters: ${definition.label}.`);
+    }
+    const maxLength = definition.parameterType === "text" ? TEMPLATE_PARAMETER_TEXT_MAX_LENGTH : TEMPLATE_PARAMETER_URL_MAX_LENGTH;
+    if (value.length > maxLength) {
+      throw new Error(`${definition.label} is too long. Maximum ${maxLength} characters are allowed by this app.`);
+    }
+    if (definition.parameterType !== "text") validatePublicHttpsTemplateMediaUrl(value);
+    normalized[definition.key] = value;
+  }
+  return normalized;
+}
 function serializeTemplateForClient(template) {
   const analysis = analyzeMetaTemplate(template.components, template.category);
+  const syncAgeMinutes = getTemplateSyncAgeMinutes(template.lastSyncedAt);
+  const isStale = syncAgeMinutes == null || syncAgeMinutes > TEMPLATE_SYNC_MAX_AGE_MINUTES;
+  const isArchived = Boolean(template.isArchived);
+  const approved = String(template.status || "").toUpperCase() === "APPROVED";
+  const sendBlockReason = isArchived ? "This template was not returned by the latest Meta sync and is archived." : !approved ? `Template status is ${String(template.status || "UNKNOWN").toUpperCase()}; only APPROVED templates can be sent.` : !analysis.supported ? analysis.unsupportedReason || "This template type is not supported." : isStale ? `Template cache is older than ${TEMPLATE_SYNC_MAX_AGE_MINUTES} minutes. Sync from Meta before sending.` : null;
   return {
     ...template,
     previewText: renderMetaTemplatePreview(template.components),
     parameterDefinitions: analysis.definitions,
     supported: analysis.supported,
-    unsupportedReason: analysis.unsupportedReason
+    unsupportedReason: analysis.unsupportedReason,
+    syncAgeMinutes,
+    isStale,
+    canSend: !sendBlockReason,
+    sendBlockReason
   };
 }
 var META_SUCCESS_STATUS_RANK = {
@@ -1741,8 +1878,42 @@ async function ensureMessageActionSchema() {
     )
   `);
   await db.execute(import_drizzle_orm2.sql`
+    ALTER TABLE meta_message_templates
+      ADD COLUMN IF NOT EXISTS sync_fingerprint text,
+      ADD COLUMN IF NOT EXISTS is_archived boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS last_seen_at timestamp DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS last_status_changed_at timestamp
+  `);
+  await db.execute(import_drizzle_orm2.sql`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_message_templates_line_name_language
       ON meta_message_templates (whatsapp_number_id, name, language)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_meta_message_templates_line_archived_status
+      ON meta_message_templates (whatsapp_number_id, is_archived, status, name)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE TABLE IF NOT EXISTS meta_template_sync_runs (
+      id serial PRIMARY KEY,
+      whatsapp_number_id integer NOT NULL REFERENCES whatsapp_numbers(id) ON DELETE CASCADE,
+      user_id integer REFERENCES users(id) ON DELETE SET NULL,
+      status text NOT NULL DEFAULT 'running',
+      fetched_count integer NOT NULL DEFAULT 0,
+      unique_count integer NOT NULL DEFAULT 0,
+      duplicate_count integer NOT NULL DEFAULT 0,
+      approved_count integer NOT NULL DEFAULT 0,
+      pending_count integer NOT NULL DEFAULT 0,
+      rejected_count integer NOT NULL DEFAULT 0,
+      archived_count integer NOT NULL DEFAULT 0,
+      error_code text,
+      error_message text,
+      started_at timestamp DEFAULT now(),
+      completed_at timestamp
+    )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_meta_template_sync_runs_line_started
+      ON meta_template_sync_runs (whatsapp_number_id, started_at DESC)
   `);
   await db.execute(import_drizzle_orm2.sql`
     UPDATE messages
@@ -2462,7 +2633,7 @@ app.get("/api/whatsapp_numbers/:id/message-templates", authenticateJWT, async (r
     return res.status(400).json({ error: "Invalid WhatsApp number ID." });
   }
   try {
-    const templates = await db.select().from(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId)).orderBy((0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.name), (0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.language));
+    const templates = await db.select().from(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId)).orderBy((0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.isArchived), (0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.name), (0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.language));
     return res.json(templates.map(serializeTemplateForClient));
   } catch (error) {
     return res.status(500).json({ error: error.message || "Could not load Meta templates." });
@@ -2477,49 +2648,146 @@ app.post(
     if (!Number.isInteger(whatsappNumberId)) {
       return res.status(400).json({ error: "Invalid WhatsApp number ID." });
     }
+    let syncRunId = null;
     try {
       const [whatsappNumber] = await db.select().from(schema_exports.whatsappNumbers).where((0, import_drizzle_orm2.eq)(schema_exports.whatsappNumbers.id, whatsappNumberId)).limit(1);
       if (!whatsappNumber) return res.status(404).json({ error: "WhatsApp number not found." });
       if (!whatsappNumber.wabaId || !whatsappNumber.accessToken) {
         return res.status(400).json({ error: "WABA ID or Permanent Access Token is missing." });
       }
-      const metaTemplates = await fetchMetaMessageTemplates({
+      const [syncRun] = await db.insert(schema_exports.metaTemplateSyncRuns).values({
+        whatsappNumberId,
+        userId: req.user.id,
+        status: "running",
+        startedAt: /* @__PURE__ */ new Date()
+      }).returning();
+      syncRunId = syncRun.id;
+      const rawMetaTemplates = await fetchMetaMessageTemplates({
         wabaId: whatsappNumber.wabaId,
         accessToken: whatsappNumber.accessToken
       });
+      const deduped = dedupeMetaTemplates(rawMetaTemplates);
+      const metaTemplates = deduped.templates;
       const syncedAt = /* @__PURE__ */ new Date();
       await db.transaction(async (tx) => {
-        await tx.delete(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId));
+        await tx.update(schema_exports.metaMessageTemplates).set({ isArchived: true }).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId));
         if (metaTemplates.length) {
           await tx.insert(schema_exports.metaMessageTemplates).values(metaTemplates.map((template) => ({
             whatsappNumberId,
-            metaTemplateId: String(template?.id || "").trim() || null,
-            name: String(template?.name || "").trim(),
-            language: String(template?.language || "").trim(),
-            category: String(template?.category || "UTILITY").trim().toUpperCase(),
-            status: String(template?.status || "PENDING").trim().toUpperCase(),
-            qualityScore: template?.quality_score == null ? null : typeof template.quality_score === "string" ? template.quality_score : JSON.stringify(template.quality_score),
-            components: JSON.stringify(Array.isArray(template?.components) ? template.components : []),
+            metaTemplateId: template.metaTemplateId,
+            name: template.name,
+            language: template.language,
+            category: template.category,
+            status: template.status,
+            qualityScore: template.qualityScore,
+            components: template.components,
+            syncFingerprint: template.syncFingerprint,
+            isArchived: false,
+            lastSeenAt: syncedAt,
+            lastStatusChangedAt: syncedAt,
             lastSyncedAt: syncedAt
-          })));
+          }))).onConflictDoUpdate({
+            target: [
+              schema_exports.metaMessageTemplates.whatsappNumberId,
+              schema_exports.metaMessageTemplates.name,
+              schema_exports.metaMessageTemplates.language
+            ],
+            set: {
+              metaTemplateId: import_drizzle_orm2.sql`excluded.meta_template_id`,
+              category: import_drizzle_orm2.sql`excluded.category`,
+              status: import_drizzle_orm2.sql`excluded.status`,
+              qualityScore: import_drizzle_orm2.sql`excluded.quality_score`,
+              components: import_drizzle_orm2.sql`excluded.components`,
+              syncFingerprint: import_drizzle_orm2.sql`excluded.sync_fingerprint`,
+              isArchived: false,
+              lastSeenAt: syncedAt,
+              lastSyncedAt: syncedAt,
+              lastStatusChangedAt: import_drizzle_orm2.sql`
+                CASE
+                  WHEN meta_message_templates.status IS DISTINCT FROM excluded.status
+                    THEN excluded.last_status_changed_at
+                  ELSE meta_message_templates.last_status_changed_at
+                END
+              `
+            }
+          });
         }
       });
+      const templates = await db.select().from(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId)).orderBy((0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.isArchived), (0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.name), (0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.language));
+      const activeTemplates = templates.filter((item) => !item.isArchived);
+      const approvedCount = activeTemplates.filter((item) => item.status === "APPROVED").length;
+      const pendingCount = activeTemplates.filter((item) => item.status === "PENDING").length;
+      const rejectedCount = activeTemplates.filter((item) => item.status === "REJECTED").length;
+      const archivedCount = templates.filter((item) => item.isArchived).length;
+      await db.update(schema_exports.metaTemplateSyncRuns).set({
+        status: "success",
+        fetchedCount: rawMetaTemplates.length,
+        uniqueCount: metaTemplates.length,
+        duplicateCount: deduped.duplicateCount + deduped.invalidCount,
+        approvedCount,
+        pendingCount,
+        rejectedCount,
+        archivedCount,
+        completedAt: syncedAt
+      }).where((0, import_drizzle_orm2.eq)(schema_exports.metaTemplateSyncRuns.id, syncRunId));
       await auditLog(
         req.user.id,
         req.user.email,
         "Meta Templates Synced",
-        `Synced ${metaTemplates.length} WhatsApp templates for line ${whatsappNumber.displayName}.`
+        `Fetched ${rawMetaTemplates.length}; kept ${metaTemplates.length} unique; ignored ${deduped.duplicateCount} duplicates and ${deduped.invalidCount} invalid records; ${archivedCount} cached templates archived for line ${whatsappNumber.displayName}.`
       );
-      const templates = await db.select().from(schema_exports.metaMessageTemplates).where((0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, whatsappNumberId)).orderBy((0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.name), (0, import_drizzle_orm2.asc)(schema_exports.metaMessageTemplates.language));
       return res.json({
         success: true,
-        count: templates.length,
-        approvedCount: templates.filter((item) => item.status === "APPROVED").length,
+        count: activeTemplates.length,
+        totalCachedCount: templates.length,
+        approvedCount,
+        pendingCount,
+        rejectedCount,
+        archivedCount,
+        duplicateCount: deduped.duplicateCount,
+        invalidCount: deduped.invalidCount,
+        syncRunId,
         templates: templates.map(serializeTemplateForClient)
       });
     } catch (error) {
       const routeError = getMetaRouteError(error);
-      return res.status(routeError.status).json(routeError.body);
+      if (syncRunId != null) {
+        await db.update(schema_exports.metaTemplateSyncRuns).set({
+          status: "failed",
+          errorCode: String(routeError.body?.providerCode || routeError.status || "SYNC_FAILED"),
+          errorMessage: String(routeError.body?.error || error?.message || "Meta template sync failed").slice(0, 2e3),
+          completedAt: /* @__PURE__ */ new Date()
+        }).where((0, import_drizzle_orm2.eq)(schema_exports.metaTemplateSyncRuns.id, syncRunId)).catch(() => void 0);
+      }
+      await auditLog(
+        req.user.id,
+        req.user.email,
+        "Meta Template Sync Failed",
+        `Template sync failed for WhatsApp line ${whatsappNumberId}. Existing cached templates were preserved. ${String(error?.message || error).slice(0, 1e3)}`
+      ).catch(() => void 0);
+      return res.status(routeError.status).json({
+        ...routeError.body,
+        cachedTemplatesPreserved: true,
+        syncRunId
+      });
+    }
+  }
+);
+app.get(
+  "/api/whatsapp_numbers/:id/message-templates/sync-history",
+  authenticateJWT,
+  async (req, res) => {
+    const whatsappNumberId = Number(req.params.id);
+    const requestedLimit = Number(req.query.limit || 10);
+    const limit = Number.isFinite(requestedLimit) ? Math.min(50, Math.max(1, Math.floor(requestedLimit))) : 10;
+    if (!Number.isInteger(whatsappNumberId)) {
+      return res.status(400).json({ error: "Invalid WhatsApp number ID." });
+    }
+    try {
+      const runs = await db.select().from(schema_exports.metaTemplateSyncRuns).where((0, import_drizzle_orm2.eq)(schema_exports.metaTemplateSyncRuns.whatsappNumberId, whatsappNumberId)).orderBy((0, import_drizzle_orm2.desc)(schema_exports.metaTemplateSyncRuns.id)).limit(limit);
+      return res.json(runs);
+    } catch (error) {
+      return res.status(500).json({ error: error.message || "Could not load template sync history." });
     }
   }
 );
@@ -2543,15 +2811,36 @@ app.post("/api/conversations/:id/send-template", authenticateJWT, async (req, re
       (0, import_drizzle_orm2.eq)(schema_exports.metaMessageTemplates.whatsappNumberId, conversation.whatsappNumberId)
     )).limit(1);
     if (!template) return res.status(404).json({ error: "Synced Meta template not found for this line." });
+    if (template.isArchived) {
+      return res.status(409).json({
+        error: `Template ${template.name} is archived because it was not returned by the latest Meta sync. Sync templates and select an active version.`,
+        needsSync: true
+      });
+    }
     if (String(template.status).toUpperCase() !== "APPROVED") {
       return res.status(409).json({ error: `Template ${template.name} is not approved by Meta.` });
     }
+    const syncAgeMinutes = getTemplateSyncAgeMinutes(template.lastSyncedAt);
+    if (syncAgeMinutes == null || syncAgeMinutes > TEMPLATE_SYNC_MAX_AGE_MINUTES) {
+      return res.status(409).json({
+        error: `Template cache is older than ${TEMPLATE_SYNC_MAX_AGE_MINUTES} minutes. Sync from Meta before sending.`,
+        needsSync: true
+      });
+    }
+    const templateAnalysis = analyzeMetaTemplate(template.components, template.category);
+    if (!templateAnalysis.supported) {
+      return res.status(409).json({ error: templateAnalysis.unsupportedReason || "This template type is not supported." });
+    }
+    const validatedParameterValues = validateMetaTemplateParameterValues(
+      templateAnalysis.definitions,
+      parameterValues
+    );
     const outboundComponents = buildMetaTemplateSendComponents(
       template.components,
-      parameterValues,
+      validatedParameterValues,
       template.category
     );
-    const preview = renderMetaTemplatePreview(template.components, parameterValues);
+    const preview = renderMetaTemplatePreview(template.components, validatedParameterValues);
     const sentAt = /* @__PURE__ */ new Date();
     try {
       const metaResult = await sendWhatsAppTemplateMessage({
@@ -4141,6 +4430,15 @@ app.get("/api/reports/messages", authenticateJWT, async (req, res) => {
       content: schema_exports.messages.content,
       sender: schema_exports.messages.sender,
       replyType: schema_exports.messages.replyType,
+      status: schema_exports.messages.status,
+      metaMessageId: schema_exports.messages.metaMessageId,
+      failureCode: schema_exports.messages.failureCode,
+      failureTitle: schema_exports.messages.failureTitle,
+      failureDetails: schema_exports.messages.failureDetails,
+      retryCount: schema_exports.messages.retryCount,
+      retryOfMessageId: schema_exports.messages.retryOfMessageId,
+      templateName: schema_exports.messages.templateName,
+      templateLanguage: schema_exports.messages.templateLanguage,
       timestamp: schema_exports.messages.timestamp
     }).from(schema_exports.messages).innerJoin(schema_exports.conversations, (0, import_drizzle_orm2.eq)(schema_exports.messages.conversationId, schema_exports.conversations.id)).innerJoin(schema_exports.contacts, (0, import_drizzle_orm2.eq)(schema_exports.conversations.contactId, schema_exports.contacts.id)).innerJoin(schema_exports.whatsappNumbers, (0, import_drizzle_orm2.eq)(schema_exports.conversations.whatsappNumberId, schema_exports.whatsappNumbers.id)).orderBy((0, import_drizzle_orm2.desc)(schema_exports.messages.id)).limit(1e3);
     res.json(reportMessages);
