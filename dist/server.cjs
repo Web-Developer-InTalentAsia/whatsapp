@@ -51,6 +51,8 @@ __export(schema_exports, {
   appNotificationsRelations: () => appNotificationsRelations,
   auditLogs: () => auditLogs,
   auditLogsRelations: () => auditLogsRelations,
+  authLoginAttempts: () => authLoginAttempts,
+  authLoginAttemptsRelations: () => authLoginAttemptsRelations,
   contacts: () => contacts,
   contactsRelations: () => contactsRelations,
   conversations: () => conversations,
@@ -64,6 +66,8 @@ __export(schema_exports, {
   quickRepliesRelations: () => quickRepliesRelations,
   userNumberAssignments: () => userNumberAssignments,
   userNumberAssignmentsRelations: () => userNumberAssignmentsRelations,
+  userSessions: () => userSessions,
+  userSessionsRelations: () => userSessionsRelations,
   users: () => users,
   usersRelations: () => usersRelations,
   whatsappNumbers: () => whatsappNumbers,
@@ -258,10 +262,46 @@ var auditLogs = (0, import_pg_core.pgTable)("audit_logs", {
   userId: (0, import_pg_core.integer)("user_id").references(() => users.id, { onDelete: "set null" }),
   userEmail: (0, import_pg_core.text)("user_email"),
   action: (0, import_pg_core.text)("action").notNull(),
-  // 'Login', 'Logout', 'Settings Changed', etc.
+  // Human-readable action label.
   details: (0, import_pg_core.text)("details").notNull(),
+  category: (0, import_pg_core.text)("category").notNull().default("activity"),
+  // auth | authorization | configuration | data | messaging | automation | security | activity
+  severity: (0, import_pg_core.text)("severity").notNull().default("info"),
+  // info | success | warning | critical
+  success: (0, import_pg_core.boolean)("success").notNull().default(true),
   ipAddress: (0, import_pg_core.text)("ip_address"),
+  userAgent: (0, import_pg_core.text)("user_agent"),
+  requestMethod: (0, import_pg_core.text)("request_method"),
+  requestPath: (0, import_pg_core.text)("request_path"),
+  requestId: (0, import_pg_core.text)("request_id"),
+  resourceType: (0, import_pg_core.text)("resource_type"),
+  resourceId: (0, import_pg_core.text)("resource_id"),
+  metadata: (0, import_pg_core.text)("metadata").notNull().default("{}"),
+  // Sanitized JSON only. Never store credentials.
   timestamp: (0, import_pg_core.timestamp)("timestamp").defaultNow()
+});
+var authLoginAttempts = (0, import_pg_core.pgTable)("auth_login_attempts", {
+  id: (0, import_pg_core.serial)("id").primaryKey(),
+  userId: (0, import_pg_core.integer)("user_id").references(() => users.id, { onDelete: "set null" }),
+  email: (0, import_pg_core.text)("email").notNull(),
+  ipAddress: (0, import_pg_core.text)("ip_address"),
+  userAgent: (0, import_pg_core.text)("user_agent"),
+  success: (0, import_pg_core.boolean)("success").notNull().default(false),
+  failureReason: (0, import_pg_core.text)("failure_reason"),
+  requestId: (0, import_pg_core.text)("request_id"),
+  attemptedAt: (0, import_pg_core.timestamp)("attempted_at").defaultNow()
+});
+var userSessions = (0, import_pg_core.pgTable)("user_sessions", {
+  id: (0, import_pg_core.serial)("id").primaryKey(),
+  sessionId: (0, import_pg_core.text)("session_id").notNull().unique(),
+  userId: (0, import_pg_core.integer)("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+  ipAddress: (0, import_pg_core.text)("ip_address"),
+  userAgent: (0, import_pg_core.text)("user_agent"),
+  firstSeenAt: (0, import_pg_core.timestamp)("first_seen_at").defaultNow(),
+  lastSeenAt: (0, import_pg_core.timestamp)("last_seen_at").defaultNow(),
+  lastPath: (0, import_pg_core.text)("last_path"),
+  requestCount: (0, import_pg_core.integer)("request_count").notNull().default(0),
+  loggedOutAt: (0, import_pg_core.timestamp)("logged_out_at")
 });
 var quickReplies = (0, import_pg_core.pgTable)("quick_replies", {
   id: (0, import_pg_core.serial)("id").primaryKey(),
@@ -327,6 +367,8 @@ var usersRelations = (0, import_drizzle_orm.relations)(users, ({ many }) => ({
   conversationsAssigned: many(conversations),
   messagesSent: many(messages),
   auditLogs: many(auditLogs),
+  loginAttempts: many(authLoginAttempts),
+  sessions: many(userSessions),
   metaTemplateSyncRuns: many(metaTemplateSyncRuns),
   notifications: many(appNotifications)
 }));
@@ -448,6 +490,18 @@ var auditLogsRelations = (0, import_drizzle_orm.relations)(auditLogs, ({ one }) 
     references: [users.id]
   })
 }));
+var authLoginAttemptsRelations = (0, import_drizzle_orm.relations)(authLoginAttempts, ({ one }) => ({
+  user: one(users, {
+    fields: [authLoginAttempts.userId],
+    references: [users.id]
+  })
+}));
+var userSessionsRelations = (0, import_drizzle_orm.relations)(userSessions, ({ one }) => ({
+  user: one(users, {
+    fields: [userSessions.userId],
+    references: [users.id]
+  })
+}));
 
 // src/db/index.ts
 var createPool = () => {
@@ -467,6 +521,12 @@ var db = (0, import_node_postgres.drizzle)(pool, { schema: schema_exports });
 
 // server.ts
 var app = (0, import_express.default)();
+app.use((req, res, next) => {
+  const suppliedRequestId = String(req.get("x-request-id") || "").trim();
+  req.requestId = /^[A-Za-z0-9._:-]{8,120}$/.test(suppliedRequestId) ? suppliedRequestId : import_crypto.default.randomUUID();
+  res.setHeader("X-Request-ID", req.requestId);
+  next();
+});
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 var PORT = Number(process.env.PORT || 3e3);
@@ -502,6 +562,8 @@ app.get("/api/health", (req, res) => {
     whatsappServiceWindowHours: WHATSAPP_SERVICE_WINDOW_HOURS,
     recruiterResponseSlaMinutes: RECRUITER_RESPONSE_SLA_MINUTES,
     unassignedEscalationMinutes: UNASSIGNED_ESCALATION_MINUTES,
+    suspiciousLoginThreshold: SECURITY_SUSPICIOUS_LOGIN_THRESHOLD,
+    suspiciousLoginWindowMinutes: SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES,
     time: (/* @__PURE__ */ new Date()).toISOString()
   });
 });
@@ -533,6 +595,10 @@ var configuredSlaDueSoonMinutes = Number(process.env.SLA_DUE_SOON_MINUTES || 5);
 var SLA_DUE_SOON_MINUTES = Number.isFinite(configuredSlaDueSoonMinutes) ? Math.min(RECRUITER_RESPONSE_SLA_MINUTES, Math.max(1, Math.floor(configuredSlaDueSoonMinutes))) : Math.min(5, RECRUITER_RESPONSE_SLA_MINUTES);
 var configuredSlaMonitorIntervalSeconds = Number(process.env.SLA_MONITOR_INTERVAL_SECONDS || 60);
 var SLA_MONITOR_INTERVAL_SECONDS = Number.isFinite(configuredSlaMonitorIntervalSeconds) ? Math.min(300, Math.max(15, Math.floor(configuredSlaMonitorIntervalSeconds))) : 60;
+var configuredSuspiciousLoginThreshold = Number(process.env.SECURITY_SUSPICIOUS_LOGIN_THRESHOLD || 5);
+var SECURITY_SUSPICIOUS_LOGIN_THRESHOLD = Number.isFinite(configuredSuspiciousLoginThreshold) ? Math.min(50, Math.max(3, Math.floor(configuredSuspiciousLoginThreshold))) : 5;
+var configuredSuspiciousLoginWindowMinutes = Number(process.env.SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES || 15);
+var SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES = Number.isFinite(configuredSuspiciousLoginWindowMinutes) ? Math.min(1440, Math.max(5, Math.floor(configuredSuspiciousLoginWindowMinutes))) : 15;
 var configuredTemplateSyncMaxAgeMinutes = Number(process.env.TEMPLATE_SYNC_MAX_AGE_MINUTES || 1440);
 var TEMPLATE_SYNC_MAX_AGE_MINUTES = Number.isFinite(configuredTemplateSyncMaxAgeMinutes) ? Math.min(10080, Math.max(15, Math.floor(configuredTemplateSyncMaxAgeMinutes))) : 1440;
 var TEMPLATE_PARAMETER_TEXT_MAX_LENGTH = 1024;
@@ -2198,6 +2264,240 @@ async function ensureMessageActionSchema() {
     CREATE INDEX IF NOT EXISTS idx_app_notifications_user_unread_created
       ON app_notifications (user_id, is_read, created_at DESC)
   `);
+  await db.execute(import_drizzle_orm2.sql`
+    ALTER TABLE audit_logs
+      ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'activity',
+      ADD COLUMN IF NOT EXISTS severity text NOT NULL DEFAULT 'info',
+      ADD COLUMN IF NOT EXISTS success boolean NOT NULL DEFAULT true,
+      ADD COLUMN IF NOT EXISTS user_agent text,
+      ADD COLUMN IF NOT EXISTS request_method text,
+      ADD COLUMN IF NOT EXISTS request_path text,
+      ADD COLUMN IF NOT EXISTS request_id text,
+      ADD COLUMN IF NOT EXISTS resource_type text,
+      ADD COLUMN IF NOT EXISTS resource_id text,
+      ADD COLUMN IF NOT EXISTS metadata text NOT NULL DEFAULT '{}'
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    UPDATE audit_logs
+      SET category = CASE
+        WHEN action ILIKE '%login%' OR action ILIKE '%logout%' THEN 'auth'
+        WHEN action ILIKE '%permission%' OR action ILIKE '%access%' THEN 'authorization'
+        WHEN action ILIKE '%settings%' OR action ILIKE '%number%' OR action ILIKE '%assignment%' THEN 'configuration'
+        WHEN action ILIKE '%message%' OR action ILIKE '%reply%' OR action ILIKE '%template%' THEN 'messaging'
+        WHEN action ILIKE '%workflow%' OR action ILIKE '%automation%' OR action ILIKE '%AI %' THEN 'automation'
+        WHEN action ILIKE '%failed%' OR action ILIKE '%breached%' OR action ILIKE '%blocked%' THEN 'security'
+        ELSE COALESCE(NULLIF(category, ''), 'activity')
+      END,
+      severity = CASE
+        WHEN action ILIKE '%failed%' OR action ILIKE '%breached%' OR action ILIKE '%blocked%' THEN 'warning'
+        WHEN action ILIKE '%created%' OR action ILIKE '%verified%' OR action = 'Login' THEN 'success'
+        ELSE COALESCE(NULLIF(severity, ''), 'info')
+      END
+      WHERE category = 'activity' OR category IS NULL OR severity = 'info' OR severity IS NULL
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp
+      ON audit_logs (timestamp DESC)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_category_severity_timestamp
+      ON audit_logs (category, severity, timestamp DESC)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_user_timestamp
+      ON audit_logs (user_id, timestamp DESC)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE TABLE IF NOT EXISTS auth_login_attempts (
+      id serial PRIMARY KEY,
+      user_id integer REFERENCES users(id) ON DELETE SET NULL,
+      email text NOT NULL,
+      ip_address text,
+      user_agent text,
+      success boolean NOT NULL DEFAULT false,
+      failure_reason text,
+      request_id text,
+      attempted_at timestamp DEFAULT now()
+    )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_time
+      ON auth_login_attempts (attempted_at DESC)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_email_success_time
+      ON auth_login_attempts (email, success, attempted_at DESC)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_ip_success_time
+      ON auth_login_attempts (ip_address, success, attempted_at DESC)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id serial PRIMARY KEY,
+      session_id text NOT NULL UNIQUE,
+      user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      ip_address text,
+      user_agent text,
+      first_seen_at timestamp DEFAULT now(),
+      last_seen_at timestamp DEFAULT now(),
+      last_path text,
+      request_count integer NOT NULL DEFAULT 0,
+      logged_out_at timestamp
+    )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user_last_seen
+      ON user_sessions (user_id, last_seen_at DESC)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_active_last_seen
+      ON user_sessions (last_seen_at DESC)
+      WHERE logged_out_at IS NULL
+  `);
+}
+function getRequestIp(req) {
+  const forwardedFor = String(req?.headers?.["x-forwarded-for"] || "").trim();
+  if (forwardedFor) return forwardedFor.split(",")[0].trim().slice(0, 128);
+  return String(req?.ip || req?.socket?.remoteAddress || "unknown").slice(0, 128);
+}
+function getRequestUserAgent(req) {
+  return String(req?.get?.("user-agent") || req?.headers?.["user-agent"] || "unknown").slice(0, 1e3);
+}
+function sanitizeAuditMetadata(value, depth = 0) {
+  if (depth > 4) return "[depth-limited]";
+  if (value === null || value === void 0) return value;
+  if (typeof value === "string") return value.length > 1e3 ? `${value.slice(0, 997)}...` : value;
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.slice(0, 30).map((item) => sanitizeAuditMetadata(item, depth + 1));
+  if (typeof value === "object") {
+    const safe = {};
+    for (const [key, item] of Object.entries(value).slice(0, 50)) {
+      if (/password|passwd|secret|token|api.?key|authorization|cookie|credential/i.test(key)) {
+        safe[key] = "[redacted]";
+      } else {
+        safe[key] = sanitizeAuditMetadata(item, depth + 1);
+      }
+    }
+    return safe;
+  }
+  return String(value);
+}
+function stringifyAuditMetadata(value) {
+  try {
+    const serialized = JSON.stringify(sanitizeAuditMetadata(value ?? {}));
+    return serialized.length > 8e3 ? `${serialized.slice(0, 7997)}...` : serialized;
+  } catch {
+    return "{}";
+  }
+}
+function inferAuditCategory(action) {
+  const normalized = action.toLowerCase();
+  if (/login|logout|session/.test(normalized)) return "auth";
+  if (/permission|access denied|authorization/.test(normalized)) return "authorization";
+  if (/settings|number|assignment|user (created|updated|deleted)|api connection/.test(normalized)) return "configuration";
+  if (/message|reply|template|delivery/.test(normalized)) return "messaging";
+  if (/workflow|automation|ai |handover|cooldown/.test(normalized)) return "automation";
+  if (/failed|blocked|breached|suspicious|invalid authentication/.test(normalized)) return "security";
+  if (/contact|conversation|data/.test(normalized)) return "data";
+  return "activity";
+}
+function inferAuditSeverity(action, success) {
+  const normalized = action.toLowerCase();
+  if (/suspicious|critical|breached|processing error/.test(normalized)) return "critical";
+  if (!success || /failed|blocked|denied|rejected/.test(normalized)) return "warning";
+  if (/created|verified|sent|resumed|login$/.test(normalized)) return "success";
+  return "info";
+}
+async function auditLog(userId, email, action, details, ip, options = {}) {
+  try {
+    const req = options.req;
+    await db.insert(schema_exports.auditLogs).values({
+      userId,
+      userEmail: email,
+      action,
+      details,
+      category: options.category || inferAuditCategory(action),
+      severity: options.severity || inferAuditSeverity(action, options.success !== false),
+      success: options.success !== false,
+      ipAddress: ip || (req ? getRequestIp(req) : "127.0.0.1"),
+      userAgent: options.userAgent ?? (req ? getRequestUserAgent(req) : null),
+      requestMethod: options.requestMethod ?? req?.method ?? null,
+      requestPath: options.requestPath ?? req?.originalUrl ?? null,
+      requestId: options.requestId ?? req?.requestId ?? null,
+      resourceType: options.resourceType || null,
+      resourceId: options.resourceId === null || options.resourceId === void 0 ? null : String(options.resourceId),
+      metadata: stringifyAuditMetadata(options.metadata)
+    });
+  } catch (error) {
+    console.error("Audit logging error:", error);
+  }
+}
+async function recordLoginAttempt(params) {
+  const email = String(params.email || "(missing)").trim().toLowerCase().slice(0, 320);
+  const ipAddress = getRequestIp(params.req);
+  const attemptedAt = /* @__PURE__ */ new Date();
+  await db.insert(schema_exports.authLoginAttempts).values({
+    userId: params.userId || null,
+    email,
+    ipAddress,
+    userAgent: getRequestUserAgent(params.req),
+    success: params.success,
+    failureReason: params.failureReason || null,
+    requestId: params.req?.requestId || null,
+    attemptedAt
+  });
+  if (params.success) return;
+  const since = new Date(attemptedAt.getTime() - SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES * 60 * 1e3);
+  const [failureCountRow] = await db.select({ count: import_drizzle_orm2.sql`count(*)::int` }).from(schema_exports.authLoginAttempts).where((0, import_drizzle_orm2.and)(
+    (0, import_drizzle_orm2.eq)(schema_exports.authLoginAttempts.success, false),
+    (0, import_drizzle_orm2.gte)(schema_exports.authLoginAttempts.attemptedAt, since),
+    (0, import_drizzle_orm2.or)(
+      (0, import_drizzle_orm2.eq)(schema_exports.authLoginAttempts.email, email),
+      (0, import_drizzle_orm2.eq)(schema_exports.authLoginAttempts.ipAddress, ipAddress)
+    )
+  ));
+  const failureCount = Number(failureCountRow?.count || 0);
+  if (failureCount >= SECURITY_SUSPICIOUS_LOGIN_THRESHOLD && failureCount % SECURITY_SUSPICIOUS_LOGIN_THRESHOLD === 0) {
+    await auditLog(
+      params.userId || null,
+      email === "(missing)" ? null : email,
+      "Suspicious Login Activity",
+      `${failureCount} failed sign-in attempts were detected within ${SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES} minutes for the same email or IP address.`,
+      ipAddress,
+      {
+        req: params.req,
+        category: "security",
+        severity: "critical",
+        success: false,
+        resourceType: "authentication",
+        metadata: { failureCount, windowMinutes: SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES }
+      }
+    );
+  }
+}
+async function upsertUserSession(req, userId, sessionId, reset = false) {
+  const now = /* @__PURE__ */ new Date();
+  const ipAddress = getRequestIp(req);
+  const userAgent = getRequestUserAgent(req);
+  const lastPath = String(req?.originalUrl || "").slice(0, 1e3);
+  await db.execute(import_drizzle_orm2.sql`
+    INSERT INTO user_sessions (
+      session_id, user_id, ip_address, user_agent, first_seen_at,
+      last_seen_at, last_path, request_count, logged_out_at
+    ) VALUES (
+      ${sessionId}, ${userId}, ${ipAddress}, ${userAgent}, ${now},
+      ${now}, ${lastPath}, 1, NULL
+    )
+    ON CONFLICT (session_id) DO UPDATE SET
+      user_id = EXCLUDED.user_id,
+      ip_address = EXCLUDED.ip_address,
+      user_agent = EXCLUDED.user_agent,
+      last_seen_at = EXCLUDED.last_seen_at,
+      last_path = EXCLUDED.last_path,
+      request_count = CASE WHEN ${reset} THEN 1 ELSE user_sessions.request_count + 1 END,
+      logged_out_at = NULL
+  `);
 }
 var authenticateJWT = async (req, res, next) => {
   const rawAuthorization = req.headers.authorization || req.headers["x-forwarded-authorization"] || "";
@@ -2218,36 +2518,55 @@ var authenticateJWT = async (req, res, next) => {
     if (!user || !user.isActive) {
       return res.status(401).json({ error: "User is suspended or deactivated." });
     }
+    const sessionId = String(decoded.jti || `legacy-user-${user.id}`);
+    const [storedSession] = await db.select({ loggedOutAt: schema_exports.userSessions.loggedOutAt }).from(schema_exports.userSessions).where((0, import_drizzle_orm2.eq)(schema_exports.userSessions.sessionId, sessionId)).limit(1);
+    if (storedSession?.loggedOutAt) {
+      return res.status(401).json({ error: "This session has been signed out. Please sign in again." });
+    }
     req.user = user;
+    req.sessionId = sessionId;
+    void upsertUserSession(req, user.id, sessionId).catch((error) => {
+      console.error("User session activity update failed:", error);
+    });
     return next();
   } catch (error) {
     if (error?.name === "TokenExpiredError") {
       return res.status(401).json({ error: "Your session has expired. Please sign in again." });
     }
+    void auditLog(null, null, "Invalid Authentication Token", "A protected API request used an invalid authentication token.", getRequestIp(req), {
+      req,
+      category: "security",
+      severity: "warning",
+      success: false,
+      resourceType: "authentication"
+    });
     return res.status(403).json({ error: "Invalid authentication token." });
   }
 };
 var requireRoles = (allowedRoles) => {
   return (req, res, next) => {
     if (!req.user || !allowedRoles.includes(req.user.role)) {
+      void auditLog(
+        req.user?.id || null,
+        req.user?.email || null,
+        "Permission Denied",
+        `Role '${req.user?.role || "unknown"}' attempted to access ${req.method} ${req.originalUrl}.`,
+        getRequestIp(req),
+        {
+          req,
+          category: "authorization",
+          severity: "warning",
+          success: false,
+          resourceType: "api_endpoint",
+          resourceId: req.originalUrl,
+          metadata: { allowedRoles }
+        }
+      );
       return res.status(403).json({ error: "Permission denied. Insufficient role permissions." });
     }
     next();
   };
 };
-async function auditLog(userId, email, action, details, ip) {
-  try {
-    await db.insert(schema_exports.auditLogs).values({
-      userId,
-      userEmail: email,
-      action,
-      details,
-      ipAddress: ip || "127.0.0.1"
-    });
-  } catch (e) {
-    console.error("Audit logging error:", e);
-  }
-}
 function notificationPreview(value, maxLength = 180) {
   const compact = String(value || "").replace(/\s+/g, " ").trim();
   if (!compact) return "Open the InTalent Inbox to view details.";
@@ -2388,31 +2707,81 @@ app.post("/api/auth/login", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
   if (!email || !password) {
+    await recordLoginAttempt({
+      req,
+      email,
+      success: false,
+      failureReason: "Missing email or password"
+    });
+    await auditLog(null, email || null, "Login Failed", "A sign-in attempt was rejected because required credentials were missing.", getRequestIp(req), {
+      req,
+      category: "auth",
+      severity: "warning",
+      success: false,
+      resourceType: "authentication"
+    });
     return res.status(400).json({ error: "Please provide email and password." });
   }
   try {
     const [user] = await db.select().from(schema_exports.users).where((0, import_drizzle_orm2.eq)(schema_exports.users.email, email)).limit(1);
     if (!user) {
+      await recordLoginAttempt({ req, email, success: false, failureReason: "Unknown account" });
+      await auditLog(null, email, "Login Failed", "A sign-in attempt used an unknown email address.", getRequestIp(req), {
+        req,
+        category: "auth",
+        severity: "warning",
+        success: false,
+        resourceType: "authentication"
+      });
       return res.status(401).json({ error: "Invalid email or password." });
     }
     if (!user.isActive) {
+      await recordLoginAttempt({ req, email, userId: user.id, success: false, failureReason: "Account deactivated" });
+      await auditLog(user.id, user.email, "Login Blocked", `A sign-in attempt was blocked because ${user.name}'s account is deactivated.`, getRequestIp(req), {
+        req,
+        category: "security",
+        severity: "warning",
+        success: false,
+        resourceType: "user",
+        resourceId: user.id
+      });
       return res.status(403).json({ error: "Your account is deactivated." });
     }
     const isMatch = import_bcryptjs.default.compareSync(password, user.password);
     if (!isMatch) {
+      await recordLoginAttempt({ req, email, userId: user.id, success: false, failureReason: "Incorrect password" });
+      await auditLog(user.id, user.email, "Login Failed", `An incorrect password was submitted for ${user.name}.`, getRequestIp(req), {
+        req,
+        category: "auth",
+        severity: "warning",
+        success: false,
+        resourceType: "user",
+        resourceId: user.id
+      });
       return res.status(401).json({ error: "Invalid email or password." });
     }
+    const sessionId = import_crypto.default.randomUUID();
     const token = import_jsonwebtoken.default.sign(
       { id: user.id, email: user.email, role: user.role },
       JWT_SECRET,
-      { expiresIn: "7d" }
+      { expiresIn: "7d", jwtid: sessionId }
     );
+    await recordLoginAttempt({ req, email, userId: user.id, success: true });
+    await upsertUserSession(req, user.id, sessionId, true);
     await auditLog(
       user.id,
       user.email,
       "Login",
       `User ${user.name} logged in successfully.`,
-      req.ip
+      getRequestIp(req),
+      {
+        req,
+        category: "auth",
+        severity: "success",
+        success: true,
+        resourceType: "user_session",
+        resourceId: sessionId
+      }
     );
     return res.status(200).json({
       token,
@@ -2427,9 +2796,35 @@ app.post("/api/auth/login", async (req, res) => {
     });
   } catch (error) {
     console.error("Login failed:", error);
+    await auditLog(null, email || null, "Login Processing Error", "The server could not complete a sign-in request.", getRequestIp(req), {
+      req,
+      category: "security",
+      severity: "critical",
+      success: false,
+      resourceType: "authentication",
+      metadata: { errorCode: error?.code || null }
+    });
     return res.status(500).json({
       error: "Server login error. Please try again."
     });
+  }
+});
+app.post("/api/auth/logout", authenticateJWT, async (req, res) => {
+  try {
+    if (req.sessionId) {
+      await db.update(schema_exports.userSessions).set({ loggedOutAt: /* @__PURE__ */ new Date(), lastSeenAt: /* @__PURE__ */ new Date(), lastPath: req.originalUrl }).where((0, import_drizzle_orm2.eq)(schema_exports.userSessions.sessionId, req.sessionId));
+    }
+    await auditLog(req.user.id, req.user.email, "Logout", `User ${req.user.name} logged out.`, getRequestIp(req), {
+      req,
+      category: "auth",
+      severity: "info",
+      success: true,
+      resourceType: "user_session",
+      resourceId: req.sessionId || null
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not log out." });
   }
 });
 app.get("/api/auth/me", authenticateJWT, (req, res) => {
@@ -4837,21 +5232,95 @@ app.put("/api/notifications/read-all", authenticateJWT, async (req, res) => {
     res.status(500).json({ error: error.message || "Could not mark notifications as read." });
   }
 });
+var AUDIT_CATEGORIES = ["auth", "authorization", "configuration", "data", "messaging", "automation", "security", "activity"];
+var AUDIT_SEVERITIES = ["info", "success", "warning", "critical"];
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.floor(parsed)));
+}
+function validDate(value) {
+  if (!value) return null;
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+function auditLogConditions(query) {
+  const conditions = [];
+  const search = String(query.search || "").trim().slice(0, 200);
+  const category = String(query.category || "all");
+  const severity = String(query.severity || "all");
+  const outcome = String(query.outcome || "all");
+  const userId = Number(query.userId);
+  const dateFrom = validDate(query.dateFrom);
+  const dateTo = validDate(query.dateTo);
+  if (search) {
+    const pattern = `%${search}%`;
+    conditions.push((0, import_drizzle_orm2.or)(
+      (0, import_drizzle_orm2.ilike)(schema_exports.auditLogs.action, pattern),
+      (0, import_drizzle_orm2.ilike)(schema_exports.auditLogs.details, pattern),
+      (0, import_drizzle_orm2.ilike)(schema_exports.auditLogs.userEmail, pattern),
+      (0, import_drizzle_orm2.ilike)(schema_exports.auditLogs.ipAddress, pattern),
+      (0, import_drizzle_orm2.ilike)(schema_exports.auditLogs.requestPath, pattern),
+      (0, import_drizzle_orm2.ilike)(schema_exports.auditLogs.resourceId, pattern)
+    ));
+  }
+  if (AUDIT_CATEGORIES.includes(category)) conditions.push((0, import_drizzle_orm2.eq)(schema_exports.auditLogs.category, category));
+  if (AUDIT_SEVERITIES.includes(severity)) conditions.push((0, import_drizzle_orm2.eq)(schema_exports.auditLogs.severity, severity));
+  if (outcome === "success") conditions.push((0, import_drizzle_orm2.eq)(schema_exports.auditLogs.success, true));
+  if (outcome === "failed") conditions.push((0, import_drizzle_orm2.eq)(schema_exports.auditLogs.success, false));
+  if (Number.isInteger(userId) && userId > 0) conditions.push((0, import_drizzle_orm2.eq)(schema_exports.auditLogs.userId, userId));
+  if (dateFrom) conditions.push((0, import_drizzle_orm2.gte)(schema_exports.auditLogs.timestamp, dateFrom));
+  if (dateTo) conditions.push((0, import_drizzle_orm2.lte)(schema_exports.auditLogs.timestamp, dateTo));
+  return conditions.length ? (0, import_drizzle_orm2.and)(...conditions) : void 0;
+}
+async function selectAuditLogs(query, exportMode = false) {
+  const page = exportMode ? 1 : boundedInteger(query.page, 1, 1, 1e6);
+  const pageSize = exportMode ? 5e3 : boundedInteger(query.pageSize, 50, 10, 200);
+  const whereClause = auditLogConditions(query);
+  const [countRow] = await db.select({ count: import_drizzle_orm2.sql`count(*)::int` }).from(schema_exports.auditLogs).where(whereClause);
+  const items = await db.select({
+    id: schema_exports.auditLogs.id,
+    userId: schema_exports.auditLogs.userId,
+    userEmail: schema_exports.auditLogs.userEmail,
+    userName: schema_exports.users.name,
+    action: schema_exports.auditLogs.action,
+    details: schema_exports.auditLogs.details,
+    category: schema_exports.auditLogs.category,
+    severity: schema_exports.auditLogs.severity,
+    success: schema_exports.auditLogs.success,
+    ipAddress: schema_exports.auditLogs.ipAddress,
+    userAgent: schema_exports.auditLogs.userAgent,
+    requestMethod: schema_exports.auditLogs.requestMethod,
+    requestPath: schema_exports.auditLogs.requestPath,
+    requestId: schema_exports.auditLogs.requestId,
+    resourceType: schema_exports.auditLogs.resourceType,
+    resourceId: schema_exports.auditLogs.resourceId,
+    metadata: schema_exports.auditLogs.metadata,
+    timestamp: schema_exports.auditLogs.timestamp
+  }).from(schema_exports.auditLogs).leftJoin(schema_exports.users, (0, import_drizzle_orm2.eq)(schema_exports.auditLogs.userId, schema_exports.users.id)).where(whereClause).orderBy((0, import_drizzle_orm2.desc)(schema_exports.auditLogs.timestamp), (0, import_drizzle_orm2.desc)(schema_exports.auditLogs.id)).limit(pageSize).offset((page - 1) * pageSize);
+  return { items, total: Number(countRow?.count || 0), page, pageSize };
+}
 var handleGetAuditLogs = async (req, res) => {
   try {
-    const logs = await db.select().from(schema_exports.auditLogs).orderBy((0, import_drizzle_orm2.desc)(schema_exports.auditLogs.id)).limit(100);
-    res.json(logs);
+    res.json(await selectAuditLogs(req.query));
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message || "Could not load audit logs." });
   }
 };
 app.get("/api/audit_logs", authenticateJWT, requireRoles(["super_admin", "admin"]), handleGetAuditLogs);
 app.get("/api/audit-logs", authenticateJWT, requireRoles(["super_admin", "admin"]), handleGetAuditLogs);
 var handlePostAuditLogs = async (req, res) => {
-  const { action, details } = req.body;
+  const action = String(req.body?.action || "").trim().slice(0, 160);
+  const details = String(req.body?.details || "").trim().slice(0, 4e3);
   if (!action || !details) return res.status(400).json({ error: "Missing action/details." });
   try {
-    await auditLog(req.user.id, req.user.email, action, details);
+    await auditLog(req.user.id, req.user.email, action, details, getRequestIp(req), {
+      req,
+      category: "activity",
+      severity: "info",
+      success: true,
+      resourceType: "client_activity"
+    });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -4859,6 +5328,155 @@ var handlePostAuditLogs = async (req, res) => {
 };
 app.post("/api/audit_logs", authenticateJWT, handlePostAuditLogs);
 app.post("/api/audit-logs", authenticateJWT, handlePostAuditLogs);
+app.get("/api/security/summary", authenticateJWT, requireRoles(["super_admin"]), async (_req, res) => {
+  try {
+    const now = /* @__PURE__ */ new Date();
+    const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1e3);
+    const since7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1e3);
+    const activeSince = new Date(now.getTime() - 30 * 60 * 1e3);
+    const [audit24hRow] = await db.select({ count: import_drizzle_orm2.sql`count(*)::int` }).from(schema_exports.auditLogs).where((0, import_drizzle_orm2.gte)(schema_exports.auditLogs.timestamp, since24h));
+    const [failedLoginRow] = await db.select({ count: import_drizzle_orm2.sql`count(*)::int` }).from(schema_exports.authLoginAttempts).where((0, import_drizzle_orm2.and)((0, import_drizzle_orm2.eq)(schema_exports.authLoginAttempts.success, false), (0, import_drizzle_orm2.gte)(schema_exports.authLoginAttempts.attemptedAt, since24h)));
+    const [criticalRow] = await db.select({ count: import_drizzle_orm2.sql`count(*)::int` }).from(schema_exports.auditLogs).where((0, import_drizzle_orm2.and)((0, import_drizzle_orm2.eq)(schema_exports.auditLogs.severity, "critical"), (0, import_drizzle_orm2.gte)(schema_exports.auditLogs.timestamp, since7d)));
+    const sessions24h = await db.select({ userId: schema_exports.userSessions.userId }).from(schema_exports.userSessions).where((0, import_drizzle_orm2.gte)(schema_exports.userSessions.lastSeenAt, since24h));
+    const activeSessionsRows = await db.select({ id: schema_exports.userSessions.id }).from(schema_exports.userSessions).where((0, import_drizzle_orm2.and)(
+      (0, import_drizzle_orm2.gte)(schema_exports.userSessions.lastSeenAt, activeSince),
+      import_drizzle_orm2.sql`${schema_exports.userSessions.loggedOutAt} IS NULL`
+    ));
+    const failedAttempts = await db.select({ ipAddress: schema_exports.authLoginAttempts.ipAddress }).from(schema_exports.authLoginAttempts).where((0, import_drizzle_orm2.and)((0, import_drizzle_orm2.eq)(schema_exports.authLoginAttempts.success, false), (0, import_drizzle_orm2.gte)(schema_exports.authLoginAttempts.attemptedAt, since24h)));
+    const failedByIp = /* @__PURE__ */ new Map();
+    for (const attempt of failedAttempts) {
+      if (!attempt.ipAddress) continue;
+      failedByIp.set(attempt.ipAddress, (failedByIp.get(attempt.ipAddress) || 0) + 1);
+    }
+    res.json({
+      auditEvents24h: Number(audit24hRow?.count || 0),
+      failedLoginAttempts24h: Number(failedLoginRow?.count || 0),
+      criticalEvents7d: Number(criticalRow?.count || 0),
+      activeUsers24h: new Set(sessions24h.map((item) => item.userId)).size,
+      activeSessions: activeSessionsRows.length,
+      suspiciousIps24h: [...failedByIp.values()].filter((count) => count >= SECURITY_SUSPICIOUS_LOGIN_THRESHOLD).length,
+      suspiciousLoginThreshold: SECURITY_SUSPICIOUS_LOGIN_THRESHOLD,
+      suspiciousLoginWindowMinutes: SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES,
+      generatedAt: now.toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load security summary." });
+  }
+});
+app.get("/api/security/login-attempts", authenticateJWT, requireRoles(["super_admin"]), async (req, res) => {
+  try {
+    const page = boundedInteger(req.query.page, 1, 1, 1e6);
+    const pageSize = boundedInteger(req.query.pageSize, 50, 10, 200);
+    const outcome = String(req.query.outcome || "all");
+    const search = String(req.query.search || "").trim().slice(0, 200);
+    const conditions = [];
+    if (outcome === "success") conditions.push((0, import_drizzle_orm2.eq)(schema_exports.authLoginAttempts.success, true));
+    if (outcome === "failed") conditions.push((0, import_drizzle_orm2.eq)(schema_exports.authLoginAttempts.success, false));
+    if (search) {
+      const pattern = `%${search}%`;
+      conditions.push((0, import_drizzle_orm2.or)(
+        (0, import_drizzle_orm2.ilike)(schema_exports.authLoginAttempts.email, pattern),
+        (0, import_drizzle_orm2.ilike)(schema_exports.authLoginAttempts.ipAddress, pattern),
+        (0, import_drizzle_orm2.ilike)(schema_exports.authLoginAttempts.failureReason, pattern)
+      ));
+    }
+    const whereClause = conditions.length ? (0, import_drizzle_orm2.and)(...conditions) : void 0;
+    const [countRow] = await db.select({ count: import_drizzle_orm2.sql`count(*)::int` }).from(schema_exports.authLoginAttempts).where(whereClause);
+    const items = await db.select({
+      id: schema_exports.authLoginAttempts.id,
+      userId: schema_exports.authLoginAttempts.userId,
+      userName: schema_exports.users.name,
+      email: schema_exports.authLoginAttempts.email,
+      ipAddress: schema_exports.authLoginAttempts.ipAddress,
+      userAgent: schema_exports.authLoginAttempts.userAgent,
+      success: schema_exports.authLoginAttempts.success,
+      failureReason: schema_exports.authLoginAttempts.failureReason,
+      requestId: schema_exports.authLoginAttempts.requestId,
+      attemptedAt: schema_exports.authLoginAttempts.attemptedAt
+    }).from(schema_exports.authLoginAttempts).leftJoin(schema_exports.users, (0, import_drizzle_orm2.eq)(schema_exports.authLoginAttempts.userId, schema_exports.users.id)).where(whereClause).orderBy((0, import_drizzle_orm2.desc)(schema_exports.authLoginAttempts.attemptedAt), (0, import_drizzle_orm2.desc)(schema_exports.authLoginAttempts.id)).limit(pageSize).offset((page - 1) * pageSize);
+    res.json({ items, total: Number(countRow?.count || 0), page, pageSize });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load login attempts." });
+  }
+});
+app.get("/api/security/sessions", authenticateJWT, requireRoles(["super_admin"]), async (req, res) => {
+  try {
+    const page = boundedInteger(req.query.page, 1, 1, 1e6);
+    const pageSize = boundedInteger(req.query.pageSize, 50, 10, 200);
+    const search = String(req.query.search || "").trim().slice(0, 200);
+    const conditions = [];
+    if (search) {
+      const pattern = `%${search}%`;
+      conditions.push((0, import_drizzle_orm2.or)(
+        (0, import_drizzle_orm2.ilike)(schema_exports.users.name, pattern),
+        (0, import_drizzle_orm2.ilike)(schema_exports.users.email, pattern),
+        (0, import_drizzle_orm2.ilike)(schema_exports.userSessions.ipAddress, pattern),
+        (0, import_drizzle_orm2.ilike)(schema_exports.userSessions.userAgent, pattern),
+        (0, import_drizzle_orm2.ilike)(schema_exports.userSessions.lastPath, pattern)
+      ));
+    }
+    const whereClause = conditions.length ? (0, import_drizzle_orm2.and)(...conditions) : void 0;
+    const [countRow] = await db.select({ count: import_drizzle_orm2.sql`count(*)::int` }).from(schema_exports.userSessions).leftJoin(schema_exports.users, (0, import_drizzle_orm2.eq)(schema_exports.userSessions.userId, schema_exports.users.id)).where(whereClause);
+    const items = await db.select({
+      id: schema_exports.userSessions.id,
+      sessionId: schema_exports.userSessions.sessionId,
+      userId: schema_exports.userSessions.userId,
+      userName: schema_exports.users.name,
+      userEmail: schema_exports.users.email,
+      userRole: schema_exports.users.role,
+      ipAddress: schema_exports.userSessions.ipAddress,
+      userAgent: schema_exports.userSessions.userAgent,
+      firstSeenAt: schema_exports.userSessions.firstSeenAt,
+      lastSeenAt: schema_exports.userSessions.lastSeenAt,
+      lastPath: schema_exports.userSessions.lastPath,
+      requestCount: schema_exports.userSessions.requestCount,
+      loggedOutAt: schema_exports.userSessions.loggedOutAt
+    }).from(schema_exports.userSessions).leftJoin(schema_exports.users, (0, import_drizzle_orm2.eq)(schema_exports.userSessions.userId, schema_exports.users.id)).where(whereClause).orderBy((0, import_drizzle_orm2.desc)(schema_exports.userSessions.lastSeenAt), (0, import_drizzle_orm2.desc)(schema_exports.userSessions.id)).limit(pageSize).offset((page - 1) * pageSize);
+    const activeCutoff = Date.now() - 30 * 60 * 1e3;
+    res.json({
+      items: items.map((item) => ({
+        ...item,
+        isActive: !item.loggedOutAt && Boolean(item.lastSeenAt && new Date(item.lastSeenAt).getTime() >= activeCutoff)
+      })),
+      total: Number(countRow?.count || 0),
+      page,
+      pageSize
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load user sessions." });
+  }
+});
+function csvCell(value) {
+  const text2 = value === null || value === void 0 ? "" : String(value);
+  return `"${text2.replace(/"/g, '""')}"`;
+}
+app.get("/api/security/audit-export.csv", authenticateJWT, requireRoles(["super_admin"]), async (req, res) => {
+  try {
+    const result = await selectAuditLogs(req.query, true);
+    const header = ["Timestamp", "Actor", "Email", "Category", "Severity", "Outcome", "Action", "Details", "IP Address", "Request", "Request ID", "Resource", "Metadata"];
+    const rows = result.items.map((item) => [
+      item.timestamp ? new Date(item.timestamp).toISOString() : "",
+      item.userName || "System",
+      item.userEmail || "",
+      item.category,
+      item.severity,
+      item.success ? "Success" : "Failed",
+      item.action,
+      item.details,
+      item.ipAddress || "",
+      [item.requestMethod, item.requestPath].filter(Boolean).join(" "),
+      item.requestId || "",
+      [item.resourceType, item.resourceId].filter(Boolean).join(":"),
+      item.metadata || "{}"
+    ]);
+    const csv = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="intalent-security-audit-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.csv"`);
+    res.send(`\uFEFF${csv}`);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not export audit logs." });
+  }
+});
 app.get("/api/reports", authenticateJWT, async (req, res) => {
   try {
     const { dateRange, whatsappNumberId } = req.query;

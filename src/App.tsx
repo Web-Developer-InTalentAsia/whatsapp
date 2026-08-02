@@ -128,6 +128,22 @@ export default function App() {
   }, []);
 
   const handleLogout = useCallback((): void => {
+    const activeToken = token;
+    if (activeToken) {
+      void fetch("/api/auth/logout", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${activeToken}`,
+        },
+        cache: "no-store",
+        keepalive: true,
+      }).catch((error) => {
+        // Local logout must still complete when the network is unavailable.
+        console.warn("Server logout audit could not be recorded:", error);
+      });
+    }
+
     try {
       localStorage.removeItem(TOKEN_STORAGE_KEY);
     } catch (error) {
@@ -143,7 +159,7 @@ export default function App() {
     setActivePage("dashboard");
     setMobileMenuOpen(false);
     setLoading(false);
-  }, []);
+  }, [token]);
 
   const loadProfile = useCallback(
     async (

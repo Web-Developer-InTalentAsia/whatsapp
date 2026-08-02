@@ -199,14 +199,68 @@ export interface AppNotification {
   createdAt: string;
 }
 
+export type AuditCategory = 'auth' | 'authorization' | 'configuration' | 'data' | 'messaging' | 'automation' | 'security' | 'activity';
+export type AuditSeverity = 'info' | 'success' | 'warning' | 'critical';
+
 export interface AuditLog {
   id: number;
   userId?: number | null;
   userEmail?: string | null;
+  userName?: string | null;
   action: string;
   details: string;
+  category: AuditCategory;
+  severity: AuditSeverity;
+  success: boolean;
   ipAddress?: string | null;
+  userAgent?: string | null;
+  requestMethod?: string | null;
+  requestPath?: string | null;
+  requestId?: string | null;
+  resourceType?: string | null;
+  resourceId?: string | null;
+  metadata?: string | null;
   timestamp: string;
+}
+
+export interface AuthLoginAttempt {
+  id: number;
+  userId?: number | null;
+  userName?: string | null;
+  email: string;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  success: boolean;
+  failureReason?: string | null;
+  requestId?: string | null;
+  attemptedAt: string;
+}
+
+export interface UserSessionActivity {
+  id: number;
+  sessionId: string;
+  userId: number;
+  userName: string;
+  userEmail: string;
+  userRole: string;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastPath?: string | null;
+  requestCount: number;
+  loggedOutAt?: string | null;
+  isActive: boolean;
+}
+
+export interface SecurityAuditSummary {
+  auditEvents24h: number;
+  failedLoginAttempts24h: number;
+  criticalEvents7d: number;
+  activeUsers24h: number;
+  activeSessions: number;
+  suspiciousIps24h: number;
+  generatedAt: string;
 }
 
 export interface QuickReply {

@@ -190,13 +190,51 @@ export const auditLogs = pgTable('audit_logs', {
   id: serial('id').primaryKey(),
   userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
   userEmail: text('user_email'),
-  action: text('action').notNull(), // 'Login', 'Logout', 'Settings Changed', etc.
+  action: text('action').notNull(), // Human-readable action label.
   details: text('details').notNull(),
+  category: text('category').notNull().default('activity'), // auth | authorization | configuration | data | messaging | automation | security | activity
+  severity: text('severity').notNull().default('info'), // info | success | warning | critical
+  success: boolean('success').notNull().default(true),
   ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  requestMethod: text('request_method'),
+  requestPath: text('request_path'),
+  requestId: text('request_id'),
+  resourceType: text('resource_type'),
+  resourceId: text('resource_id'),
+  metadata: text('metadata').notNull().default('{}'), // Sanitized JSON only. Never store credentials.
   timestamp: timestamp('timestamp').defaultNow(),
 });
 
-// 12. Quick Replies Table
+// 12. Authentication attempts are stored independently from successful sessions
+// so administrators can review repeated failures without exposing passwords.
+export const authLoginAttempts = pgTable('auth_login_attempts', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  email: text('email').notNull(),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  success: boolean('success').notNull().default(false),
+  failureReason: text('failure_reason'),
+  requestId: text('request_id'),
+  attemptedAt: timestamp('attempted_at').defaultNow(),
+});
+
+// 13. Authenticated browser/device sessions for user-activity reporting.
+export const userSessions = pgTable('user_sessions', {
+  id: serial('id').primaryKey(),
+  sessionId: text('session_id').notNull().unique(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  firstSeenAt: timestamp('first_seen_at').defaultNow(),
+  lastSeenAt: timestamp('last_seen_at').defaultNow(),
+  lastPath: text('last_path'),
+  requestCount: integer('request_count').notNull().default(0),
+  loggedOutAt: timestamp('logged_out_at'),
+});
+
+// 14. Quick Replies Table
 export const quickReplies = pgTable('quick_replies', {
   id: serial('id').primaryKey(),
   whatsappNumberId: integer('whatsapp_number_id').references(() => whatsappNumbers.id, { onDelete: 'cascade' }).notNull(),
@@ -206,7 +244,7 @@ export const quickReplies = pgTable('quick_replies', {
 });
 
 
-// 13. Synced Meta-approved Message Templates
+// 15. Synced Meta-approved Message Templates
 export const metaMessageTemplates = pgTable('meta_message_templates', {
   id: serial('id').primaryKey(),
   whatsappNumberId: integer('whatsapp_number_id').references(() => whatsappNumbers.id, { onDelete: 'cascade' }).notNull(),
@@ -225,7 +263,7 @@ export const metaMessageTemplates = pgTable('meta_message_templates', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
-// 14. Meta template synchronization runs. Failed syncs are recorded without
+// 16. Meta template synchronization runs. Failed syncs are recorded without
 // deleting the last known-good template cache.
 export const metaTemplateSyncRuns = pgTable('meta_template_sync_runs', {
   id: serial('id').primaryKey(),
@@ -246,7 +284,7 @@ export const metaTemplateSyncRuns = pgTable('meta_template_sync_runs', {
 });
 
 
-// 15. Persistent in-app notifications for recruiters and administrators.
+// 17. Persistent in-app notifications for recruiters and administrators.
 export const appNotifications = pgTable('app_notifications', {
   id: serial('id').primaryKey(),
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
@@ -270,6 +308,8 @@ export const usersRelations = relations(users, ({ many }) => ({
   conversationsAssigned: many(conversations),
   messagesSent: many(messages),
   auditLogs: many(auditLogs),
+  loginAttempts: many(authLoginAttempts),
+  sessions: many(userSessions),
   metaTemplateSyncRuns: many(metaTemplateSyncRuns),
   notifications: many(appNotifications),
 }));
@@ -401,6 +441,21 @@ export const quickRepliesRelations = relations(quickReplies, ({ one }) => ({
 export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
   user: one(users, {
     fields: [auditLogs.userId],
+    references: [users.id],
+  }),
+}));
+
+
+export const authLoginAttemptsRelations = relations(authLoginAttempts, ({ one }) => ({
+  user: one(users, {
+    fields: [authLoginAttempts.userId],
+    references: [users.id],
+  }),
+}));
+
+export const userSessionsRelations = relations(userSessions, ({ one }) => ({
+  user: one(users, {
+    fields: [userSessions.userId],
     references: [users.id],
   }),
 }));
