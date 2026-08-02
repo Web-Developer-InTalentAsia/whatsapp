@@ -1,13 +1,17 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$BackupPath,
-    [string]$SettingsPath = (Join-Path $PSScriptRoot "backup.settings.json"),
+    [string]$SettingsPath = "",
     [switch]$RestoreDatabase,
     [switch]$RestoreSource,
     [switch]$RestoreEncryptedEnv,
     [switch]$SkipPreRestoreBackup,
     [switch]$IUnderstandThisWillOverwriteProduction
 )
+
+if ([string]::IsNullOrWhiteSpace($SettingsPath)) {
+    $SettingsPath = Join-Path $PSScriptRoot "backup.settings.json"
+}
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"

@@ -1,0 +1,23 @@
+﻿{
+    "ProjectPath":  "C:\\Users\\Administrator\\intalent_whatsapp",
+    "Pm2ProcessName":  "intalent_whatsapp",
+    "Pm2Home":  "C:\\Users\\Administrator\\.pm2",
+    "Pm2CommandPath":  "C:\\Users\\Administrator\\AppData\\Roaming\\npm\\pm2.cmd",
+    "HealthUrl":  "https://hrm.intalent.asia/api/health",
+    "StartupDelaySeconds":  60,
+    "HealthTimeoutSeconds":  15,
+    "HealthAttempts":  3,
+    "HealthRetryDelaySeconds":  5,
+    "RecoveryWaitSeconds":  15,
+    "MonitorIntervalMinutes":  5,
+    "AlertCooldownMinutes":  30,
+    "WebhookUrl":  "",
+    "StateRoot":  "C:\\ProgramData\\InTalentWhatsAppMonitor",
+    "MaxMonitorLogMb":  10,
+    "MonitorLogRetentionDays":  30,
+    "EnablePm2Logrotate":  true,
+    "Pm2LogMaxSize":  "20M",
+    "Pm2LogRetainDays":  14,
+    "Pm2LogCompress":  true,
+    "Pm2LogRotateCron":  "0 0 * * *"
+}

@@ -1,9 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$SettingsPath = (Join-Path $PSScriptRoot "backup.settings.json"),
+    [string]$SettingsPath = "",
     [string]$BackupPath = "",
     [switch]$DeepDatabaseRestoreTest
 )
+
+if ([string]::IsNullOrWhiteSpace($SettingsPath)) {
+    $SettingsPath = Join-Path $PSScriptRoot "backup.settings.json"
+}
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
