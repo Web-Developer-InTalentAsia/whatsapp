@@ -80,6 +80,12 @@ export const conversations = pgTable('conversations', {
   isUnread: boolean('is_unread').notNull().default(false),
   lastMessageAt: timestamp('last_message_at').defaultNow(),
   lastInboundAt: timestamp('last_inbound_at'),
+  awaitingResponseSince: timestamp('awaiting_response_since'),
+  responseDueAt: timestamp('response_due_at'),
+  slaBreachedAt: timestamp('sla_breached_at'),
+  lastSlaAlertAt: timestamp('last_sla_alert_at'),
+  unassignedEscalatedAt: timestamp('unassigned_escalated_at'),
+  lastHumanResponseAt: timestamp('last_human_response_at'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 

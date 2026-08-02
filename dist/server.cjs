@@ -152,6 +152,12 @@ var conversations = (0, import_pg_core.pgTable)("conversations", {
   isUnread: (0, import_pg_core.boolean)("is_unread").notNull().default(false),
   lastMessageAt: (0, import_pg_core.timestamp)("last_message_at").defaultNow(),
   lastInboundAt: (0, import_pg_core.timestamp)("last_inbound_at"),
+  awaitingResponseSince: (0, import_pg_core.timestamp)("awaiting_response_since"),
+  responseDueAt: (0, import_pg_core.timestamp)("response_due_at"),
+  slaBreachedAt: (0, import_pg_core.timestamp)("sla_breached_at"),
+  lastSlaAlertAt: (0, import_pg_core.timestamp)("last_sla_alert_at"),
+  unassignedEscalatedAt: (0, import_pg_core.timestamp)("unassigned_escalated_at"),
+  lastHumanResponseAt: (0, import_pg_core.timestamp)("last_human_response_at"),
   createdAt: (0, import_pg_core.timestamp)("created_at").defaultNow()
 });
 var messages = (0, import_pg_core.pgTable)("messages", {
@@ -494,6 +500,8 @@ app.get("/api/health", (req, res) => {
     protocol: req.protocol,
     forwardedProto: req.get("x-forwarded-proto") || null,
     whatsappServiceWindowHours: WHATSAPP_SERVICE_WINDOW_HOURS,
+    recruiterResponseSlaMinutes: RECRUITER_RESPONSE_SLA_MINUTES,
+    unassignedEscalationMinutes: UNASSIGNED_ESCALATION_MINUTES,
     time: (/* @__PURE__ */ new Date()).toISOString()
   });
 });
@@ -517,6 +525,14 @@ var MESSAGE_RETRY_MIN_INTERVAL_SECONDS = Number.isFinite(configuredMessageRetryI
 var configuredServiceWindowHours = Number(process.env.WHATSAPP_SERVICE_WINDOW_HOURS || 24);
 var WHATSAPP_SERVICE_WINDOW_HOURS = Number.isFinite(configuredServiceWindowHours) ? Math.min(168, Math.max(1, configuredServiceWindowHours)) : 24;
 var WHATSAPP_SERVICE_WINDOW_MS = WHATSAPP_SERVICE_WINDOW_HOURS * 60 * 60 * 1e3;
+var configuredRecruiterResponseSlaMinutes = Number(process.env.RECRUITER_RESPONSE_SLA_MINUTES || 15);
+var RECRUITER_RESPONSE_SLA_MINUTES = Number.isFinite(configuredRecruiterResponseSlaMinutes) ? Math.min(240, Math.max(1, Math.floor(configuredRecruiterResponseSlaMinutes))) : 15;
+var configuredUnassignedEscalationMinutes = Number(process.env.UNASSIGNED_ESCALATION_MINUTES || 5);
+var UNASSIGNED_ESCALATION_MINUTES = Number.isFinite(configuredUnassignedEscalationMinutes) ? Math.min(120, Math.max(1, Math.floor(configuredUnassignedEscalationMinutes))) : 5;
+var configuredSlaDueSoonMinutes = Number(process.env.SLA_DUE_SOON_MINUTES || 5);
+var SLA_DUE_SOON_MINUTES = Number.isFinite(configuredSlaDueSoonMinutes) ? Math.min(RECRUITER_RESPONSE_SLA_MINUTES, Math.max(1, Math.floor(configuredSlaDueSoonMinutes))) : Math.min(5, RECRUITER_RESPONSE_SLA_MINUTES);
+var configuredSlaMonitorIntervalSeconds = Number(process.env.SLA_MONITOR_INTERVAL_SECONDS || 60);
+var SLA_MONITOR_INTERVAL_SECONDS = Number.isFinite(configuredSlaMonitorIntervalSeconds) ? Math.min(300, Math.max(15, Math.floor(configuredSlaMonitorIntervalSeconds))) : 60;
 var configuredTemplateSyncMaxAgeMinutes = Number(process.env.TEMPLATE_SYNC_MAX_AGE_MINUTES || 1440);
 var TEMPLATE_SYNC_MAX_AGE_MINUTES = Number.isFinite(configuredTemplateSyncMaxAgeMinutes) ? Math.min(10080, Math.max(15, Math.floor(configuredTemplateSyncMaxAgeMinutes))) : 1440;
 var TEMPLATE_PARAMETER_TEXT_MAX_LENGTH = 1024;
@@ -555,6 +571,32 @@ function withServiceWindowFields(conversation) {
     serviceWindowOpen: windowState.isOpen,
     serviceWindowExpiresAt: windowState.expiresAt?.toISOString() || null,
     serviceWindowRemainingSeconds: windowState.remainingSeconds
+  };
+}
+function withConversationOperationalFields(conversation) {
+  const serviceFields = withServiceWindowFields(conversation);
+  const waitingSince = conversation.awaitingResponseSince ? new Date(conversation.awaitingResponseSince) : null;
+  const dueAt = conversation.responseDueAt ? new Date(conversation.responseDueAt) : waitingSince ? new Date(waitingSince.getTime() + RECRUITER_RESPONSE_SLA_MINUTES * 60 * 1e3) : null;
+  const validWaitingSince = waitingSince && !Number.isNaN(waitingSince.getTime()) ? waitingSince : null;
+  const validDueAt = dueAt && !Number.isNaN(dueAt.getTime()) ? dueAt : null;
+  const awaitingRecruiterResponse = Boolean(validWaitingSince && conversation.status !== "closed");
+  const remainingSeconds = awaitingRecruiterResponse && validDueAt ? Math.floor((validDueAt.getTime() - Date.now()) / 1e3) : 0;
+  const waitingSeconds = awaitingRecruiterResponse && validWaitingSince ? Math.max(0, Math.floor((Date.now() - validWaitingSince.getTime()) / 1e3)) : 0;
+  let slaState = "none";
+  if (awaitingRecruiterResponse) {
+    if (conversation.slaBreachedAt || remainingSeconds <= 0) slaState = "overdue";
+    else if (remainingSeconds <= SLA_DUE_SOON_MINUTES * 60) slaState = "due_soon";
+    else slaState = "on_track";
+  }
+  return {
+    ...serviceFields,
+    awaitingRecruiterResponse,
+    responseDueAt: validDueAt?.toISOString() || null,
+    slaState,
+    slaRemainingSeconds: remainingSeconds,
+    waitingSeconds,
+    isUnassignedAwaiting: Boolean(awaitingRecruiterResponse && !conversation.assignedUserId),
+    recruiterResponseSlaMinutes: RECRUITER_RESPONSE_SLA_MINUTES
   };
 }
 function getClosedServiceWindowResponse(state) {
@@ -1847,7 +1889,13 @@ async function ensureMessageActionSchema() {
   await db.execute(import_drizzle_orm2.sql`
     ALTER TABLE conversations
       ADD COLUMN IF NOT EXISTS is_unread boolean NOT NULL DEFAULT false,
-      ADD COLUMN IF NOT EXISTS last_inbound_at timestamp
+      ADD COLUMN IF NOT EXISTS last_inbound_at timestamp,
+      ADD COLUMN IF NOT EXISTS awaiting_response_since timestamp,
+      ADD COLUMN IF NOT EXISTS response_due_at timestamp,
+      ADD COLUMN IF NOT EXISTS sla_breached_at timestamp,
+      ADD COLUMN IF NOT EXISTS last_sla_alert_at timestamp,
+      ADD COLUMN IF NOT EXISTS unassigned_escalated_at timestamp,
+      ADD COLUMN IF NOT EXISTS last_human_response_at timestamp
   `);
   await db.execute(import_drizzle_orm2.sql`
     ALTER TABLE conversations
@@ -1871,6 +1919,102 @@ async function ensureMessageActionSchema() {
   await db.execute(import_drizzle_orm2.sql`
     CREATE INDEX IF NOT EXISTS idx_conversations_last_inbound_at
       ON conversations (last_inbound_at DESC)
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_conversations_response_due
+      ON conversations (response_due_at ASC)
+      WHERE awaiting_response_since IS NOT NULL AND status <> 'closed'
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE INDEX IF NOT EXISTS idx_conversations_unassigned_response_due
+      ON conversations (assigned_user_id, response_due_at ASC)
+      WHERE awaiting_response_since IS NOT NULL AND status <> 'closed'
+  `);
+  await db.execute(import_drizzle_orm2.sql.raw(`
+    WITH latest_activity AS (
+      SELECT
+        conversation_id,
+        MAX(timestamp) FILTER (WHERE sender = 'contact') AS latest_inbound,
+        MAX(timestamp) FILTER (
+          WHERE sender <> 'contact'
+            AND reply_type <> 'handover'
+            AND status IN ('sent', 'delivered', 'read')
+        ) AS latest_response
+      FROM messages
+      GROUP BY conversation_id
+    )
+    UPDATE conversations AS conversation
+      SET awaiting_response_since = activity.latest_inbound,
+          response_due_at = activity.latest_inbound + interval '${RECRUITER_RESPONSE_SLA_MINUTES} minutes',
+          sla_breached_at = CASE
+            WHEN activity.latest_inbound + interval '${RECRUITER_RESPONSE_SLA_MINUTES} minutes' <= now()
+              THEN COALESCE(conversation.sla_breached_at, now())
+            ELSE NULL
+          END
+      FROM latest_activity AS activity
+      WHERE conversation.id = activity.conversation_id
+        AND conversation.status <> 'closed'
+        AND activity.latest_inbound IS NOT NULL
+        AND (activity.latest_response IS NULL OR activity.latest_response < activity.latest_inbound)
+  `));
+  await db.execute(import_drizzle_orm2.sql`
+    UPDATE conversations AS conversation
+      SET awaiting_response_since = NULL,
+          response_due_at = NULL,
+          sla_breached_at = NULL,
+          last_sla_alert_at = NULL,
+          unassigned_escalated_at = NULL
+      WHERE conversation.status = 'closed'
+         OR EXISTS (
+           SELECT 1
+           FROM messages AS outbound
+           WHERE outbound.conversation_id = conversation.id
+             AND outbound.sender <> 'contact'
+             AND outbound.reply_type <> 'handover'
+             AND outbound.status IN ('sent', 'delivered', 'read')
+             AND outbound.timestamp >= conversation.awaiting_response_since
+         )
+  `);
+  await db.execute(import_drizzle_orm2.sql.raw(`
+    CREATE OR REPLACE FUNCTION intalent_update_conversation_sla()
+    RETURNS trigger AS $$
+    BEGIN
+      IF NEW.sender = 'contact' THEN
+        UPDATE conversations
+          SET awaiting_response_since = COALESCE(NEW.timestamp, now()),
+              response_due_at = COALESCE(NEW.timestamp, now()) + interval '${RECRUITER_RESPONSE_SLA_MINUTES} minutes',
+              sla_breached_at = NULL,
+              last_sla_alert_at = NULL,
+              unassigned_escalated_at = NULL
+          WHERE id = NEW.conversation_id
+            AND status <> 'closed';
+      ELSIF NEW.sender <> 'contact'
+        AND NEW.reply_type <> 'handover'
+        AND NEW.status IN ('sent', 'delivered', 'read') THEN
+        UPDATE conversations
+          SET awaiting_response_since = NULL,
+              response_due_at = NULL,
+              sla_breached_at = NULL,
+              last_sla_alert_at = NULL,
+              unassigned_escalated_at = NULL,
+              last_human_response_at = CASE
+                WHEN NEW.sender = 'agent' THEN COALESCE(NEW.timestamp, now())
+                ELSE last_human_response_at
+              END
+          WHERE id = NEW.conversation_id;
+      END IF;
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+  `));
+  await db.execute(import_drizzle_orm2.sql`
+    DROP TRIGGER IF EXISTS trg_messages_conversation_sla ON messages
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE TRIGGER trg_messages_conversation_sla
+      AFTER INSERT OR UPDATE OF status ON messages
+      FOR EACH ROW
+      EXECUTE FUNCTION intalent_update_conversation_sla()
   `);
   await db.execute(import_drizzle_orm2.sql`
     UPDATE conversations
@@ -2156,6 +2300,89 @@ async function createAppNotifications(params) {
 async function notifyConversationRecipients(params) {
   const userIds = await getLineNotificationRecipientIds(params);
   await createAppNotifications({ ...params, userIds });
+}
+var recruiterSlaMonitorRunning = false;
+async function runRecruiterSlaMonitor() {
+  if (recruiterSlaMonitorRunning) return;
+  recruiterSlaMonitorRunning = true;
+  try {
+    const waitingConversations = await db.select({
+      id: schema_exports.conversations.id,
+      whatsappNumberId: schema_exports.conversations.whatsappNumberId,
+      assignedUserId: schema_exports.conversations.assignedUserId,
+      status: schema_exports.conversations.status,
+      awaitingResponseSince: schema_exports.conversations.awaitingResponseSince,
+      responseDueAt: schema_exports.conversations.responseDueAt,
+      slaBreachedAt: schema_exports.conversations.slaBreachedAt,
+      lastSlaAlertAt: schema_exports.conversations.lastSlaAlertAt,
+      unassignedEscalatedAt: schema_exports.conversations.unassignedEscalatedAt,
+      contactName: schema_exports.contacts.name,
+      contactPhone: schema_exports.contacts.phoneNumber
+    }).from(schema_exports.conversations).innerJoin(schema_exports.contacts, (0, import_drizzle_orm2.eq)(schema_exports.conversations.contactId, schema_exports.contacts.id)).where(import_drizzle_orm2.sql`${schema_exports.conversations.awaitingResponseSince} IS NOT NULL AND ${schema_exports.conversations.status} <> 'closed'`);
+    const now = /* @__PURE__ */ new Date();
+    for (const conversation of waitingConversations) {
+      const waitingSince = conversation.awaitingResponseSince ? new Date(conversation.awaitingResponseSince) : null;
+      const dueAt = conversation.responseDueAt ? new Date(conversation.responseDueAt) : waitingSince ? new Date(waitingSince.getTime() + RECRUITER_RESPONSE_SLA_MINUTES * 60 * 1e3) : null;
+      if (!waitingSince || !dueAt || Number.isNaN(waitingSince.getTime()) || Number.isNaN(dueAt.getTime())) continue;
+      const waitingMinutes = Math.max(0, Math.floor((now.getTime() - waitingSince.getTime()) / 6e4));
+      const contactLabel = conversation.contactName || conversation.contactPhone || `Conversation #${conversation.id}`;
+      if (!conversation.assignedUserId && !conversation.unassignedEscalatedAt && waitingMinutes >= UNASSIGNED_ESCALATION_MINUTES) {
+        const [updated] = await db.update(schema_exports.conversations).set({ unassignedEscalatedAt: now }).where((0, import_drizzle_orm2.and)(
+          (0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conversation.id),
+          import_drizzle_orm2.sql`${schema_exports.conversations.unassignedEscalatedAt} IS NULL`,
+          import_drizzle_orm2.sql`${schema_exports.conversations.assignedUserId} IS NULL`
+        )).returning({ id: schema_exports.conversations.id });
+        if (updated) {
+          await notifyConversationRecipients({
+            conversationId: conversation.id,
+            whatsappNumberId: conversation.whatsappNumberId,
+            includeLineOwners: true,
+            type: "unassigned_escalation",
+            title: "Unassigned WhatsApp conversation",
+            message: `${contactLabel} has waited ${waitingMinutes} minute${waitingMinutes === 1 ? "" : "s"} without a recruiter assignment.`,
+            severity: "warning",
+            dedupeKey: `unassigned-sla:${conversation.id}:${waitingSince.getTime()}`
+          });
+          await auditLog(
+            null,
+            null,
+            "Unassigned Conversation Escalated",
+            `Conversation ${conversation.id} remained unassigned for ${waitingMinutes} minutes.`
+          );
+        }
+      }
+      if (dueAt.getTime() <= now.getTime() && !conversation.slaBreachedAt) {
+        const [updated] = await db.update(schema_exports.conversations).set({ slaBreachedAt: now, lastSlaAlertAt: now }).where((0, import_drizzle_orm2.and)(
+          (0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conversation.id),
+          import_drizzle_orm2.sql`${schema_exports.conversations.slaBreachedAt} IS NULL`,
+          import_drizzle_orm2.sql`${schema_exports.conversations.awaitingResponseSince} IS NOT NULL`
+        )).returning({ id: schema_exports.conversations.id });
+        if (updated) {
+          await notifyConversationRecipients({
+            conversationId: conversation.id,
+            whatsappNumberId: conversation.whatsappNumberId,
+            assignedUserId: conversation.assignedUserId,
+            includeLineOwners: true,
+            type: "sla_overdue",
+            title: "Recruiter response SLA overdue",
+            message: `${contactLabel} has been waiting ${waitingMinutes} minutes. Target: ${RECRUITER_RESPONSE_SLA_MINUTES} minutes.`,
+            severity: "critical",
+            dedupeKey: `sla-overdue:${conversation.id}:${waitingSince.getTime()}`
+          });
+          await auditLog(
+            null,
+            null,
+            "Recruiter Response SLA Breached",
+            `Conversation ${conversation.id} exceeded the ${RECRUITER_RESPONSE_SLA_MINUTES}-minute response SLA after waiting ${waitingMinutes} minutes.`
+          );
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Recruiter SLA monitor failed:", error);
+  } finally {
+    recruiterSlaMonitorRunning = false;
+  }
 }
 app.post("/api/auth/login", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
@@ -3098,6 +3325,10 @@ app.get("/api/conversations", authenticateJWT, async (req, res) => {
         conditions = import_drizzle_orm2.sql`${conditions} AND ${schema_exports.conversations.status} = 'workflow_active'`;
       } else if (status === "closed") {
         conditions = import_drizzle_orm2.sql`${conditions} AND ${schema_exports.conversations.status} = 'closed'`;
+      } else if (status === "overdue") {
+        conditions = import_drizzle_orm2.sql`${conditions} AND ${schema_exports.conversations.awaitingResponseSince} IS NOT NULL AND ${schema_exports.conversations.responseDueAt} <= now() AND ${schema_exports.conversations.status} <> 'closed'`;
+      } else if (status === "unassigned") {
+        conditions = import_drizzle_orm2.sql`${conditions} AND ${schema_exports.conversations.assignedUserId} IS NULL AND ${schema_exports.conversations.awaitingResponseSince} IS NOT NULL AND ${schema_exports.conversations.status} <> 'closed'`;
       }
     } else {
       conditions = import_drizzle_orm2.sql`${conditions} AND ${schema_exports.conversations.status} != 'closed'`;
@@ -3114,6 +3345,12 @@ app.get("/api/conversations", authenticateJWT, async (req, res) => {
       isUnread: schema_exports.conversations.isUnread,
       lastMessageAt: schema_exports.conversations.lastMessageAt,
       lastInboundAt: schema_exports.conversations.lastInboundAt,
+      awaitingResponseSince: schema_exports.conversations.awaitingResponseSince,
+      responseDueAt: schema_exports.conversations.responseDueAt,
+      slaBreachedAt: schema_exports.conversations.slaBreachedAt,
+      lastSlaAlertAt: schema_exports.conversations.lastSlaAlertAt,
+      unassignedEscalatedAt: schema_exports.conversations.unassignedEscalatedAt,
+      lastHumanResponseAt: schema_exports.conversations.lastHumanResponseAt,
       contactName: schema_exports.contacts.name,
       contactPhone: schema_exports.contacts.phoneNumber,
       contactTags: schema_exports.contacts.tags,
@@ -3128,7 +3365,7 @@ app.get("/api/conversations", authenticateJWT, async (req, res) => {
         (c) => c.contactName && c.contactName.toLowerCase().includes(q) || c.contactPhone.includes(q) || c.contactTags && c.contactTags.toLowerCase().includes(q)
       );
     }
-    res.json(filtered.map((conversation) => withServiceWindowFields(conversation)));
+    res.json(filtered.map((conversation) => withConversationOperationalFields(conversation)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3145,6 +3382,12 @@ app.get("/api/conversations/:id", authenticateJWT, async (req, res) => {
       isUnread: schema_exports.conversations.isUnread,
       lastMessageAt: schema_exports.conversations.lastMessageAt,
       lastInboundAt: schema_exports.conversations.lastInboundAt,
+      awaitingResponseSince: schema_exports.conversations.awaitingResponseSince,
+      responseDueAt: schema_exports.conversations.responseDueAt,
+      slaBreachedAt: schema_exports.conversations.slaBreachedAt,
+      lastSlaAlertAt: schema_exports.conversations.lastSlaAlertAt,
+      unassignedEscalatedAt: schema_exports.conversations.unassignedEscalatedAt,
+      lastHumanResponseAt: schema_exports.conversations.lastHumanResponseAt,
       whatsappNumberName: schema_exports.whatsappNumbers.displayName,
       whatsappNumberPhone: schema_exports.whatsappNumbers.phoneNumber
     }).from(schema_exports.conversations).innerJoin(schema_exports.whatsappNumbers, (0, import_drizzle_orm2.eq)(schema_exports.conversations.whatsappNumberId, schema_exports.whatsappNumbers.id)).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, parseInt(id))).limit(1);
@@ -3159,7 +3402,7 @@ app.get("/api/conversations/:id", authenticateJWT, async (req, res) => {
     }
     res.json({
       conversation: {
-        ...withServiceWindowFields(conv),
+        ...withConversationOperationalFields(conv),
         assignedUserName: assignedName
       },
       contact
@@ -3198,11 +3441,19 @@ app.put("/api/conversations/:id", authenticateJWT, async (req, res) => {
         updates.status = String(status);
         if (status === "closed") {
           updates.isUnread = false;
+          updates.awaitingResponseSince = null;
+          updates.responseDueAt = null;
+          updates.slaBreachedAt = null;
+          updates.lastSlaAlertAt = null;
+          updates.unassignedEscalatedAt = null;
         }
       }
     }
     if (assignedUserId !== void 0) {
       updates.assignedUserId = assignedUserId;
+      if (assignedUserId !== null && assignedUserId !== "") {
+        updates.unassignedEscalatedAt = null;
+      }
     }
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: "No conversation changes were supplied." });
@@ -3250,7 +3501,7 @@ app.put("/api/conversations/:id", authenticateJWT, async (req, res) => {
         dedupeKey: `manual-handover:${updated.id}:${Date.now()}`
       });
     }
-    res.json(updated);
+    res.json(withConversationOperationalFields(updated));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -4682,29 +4933,176 @@ app.get("/api/reports/messages", authenticateJWT, async (req, res) => {
 });
 app.get("/api/dashboard", authenticateJWT, async (req, res) => {
   try {
-    const allMessages = await db.select().from(schema_exports.messages);
-    const allConvs = await db.select().from(schema_exports.conversations);
-    const todayMsg = allMessages.filter((m) => {
-      const msgDate = new Date(m.timestamp || "");
-      const today = /* @__PURE__ */ new Date();
-      return msgDate.getDate() === today.getDate() && msgDate.getMonth() === today.getMonth() && msgDate.getFullYear() === today.getFullYear();
-    }).length;
-    const openCount = allConvs.filter((c) => c.status !== "closed").length;
-    const unreadCount = allConvs.filter((c) => c.isUnread).length;
-    const humanHandoverCount = allConvs.filter((c) => c.status === "human_handover").length;
-    const aiSuggestionsPending = allConvs.filter((c) => c.status === "ai_suggested").length;
-    const workflowActiveCount = allConvs.filter((c) => c.status === "workflow_active").length;
+    let visibleNumberIds = [];
+    if (req.user.role === "super_admin") {
+      const numbers = await db.select({ id: schema_exports.whatsappNumbers.id }).from(schema_exports.whatsappNumbers);
+      visibleNumberIds = numbers.map((number) => number.id);
+    } else {
+      const assignments = await db.select({ numberId: schema_exports.userNumberAssignments.numberId }).from(schema_exports.userNumberAssignments).where((0, import_drizzle_orm2.eq)(schema_exports.userNumberAssignments.userId, req.user.id));
+      visibleNumberIds = assignments.map((assignment) => assignment.numberId);
+    }
+    if (visibleNumberIds.length === 0) {
+      return res.json({
+        todayMessages: 0,
+        openConversations: 0,
+        unreadConversations: 0,
+        needingHumanReply: 0,
+        aiSuggestionsPending: 0,
+        workflowActive: 0,
+        awaitingResponse: 0,
+        overdueConversations: 0,
+        dueSoonConversations: 0,
+        unassignedAwaiting: 0,
+        avgFirstResponseMinutes: null,
+        withinSlaPercent: null,
+        oldestWaitingMinutes: 0,
+        responseSlaMinutes: RECRUITER_RESPONSE_SLA_MINUTES,
+        unassignedEscalationMinutes: UNASSIGNED_ESCALATION_MINUTES,
+        numberSummary: [],
+        userReplySummary: [],
+        recruiterPerformance: [],
+        overdueQueue: [],
+        generatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+    const [allMessagesRaw, allConvsRaw, allNumbersRaw, allUsers, allContacts] = await Promise.all([
+      db.select().from(schema_exports.messages),
+      db.select().from(schema_exports.conversations),
+      db.select().from(schema_exports.whatsappNumbers),
+      db.select().from(schema_exports.users),
+      db.select().from(schema_exports.contacts)
+    ]);
+    const allConvs = allConvsRaw.filter((conversation) => visibleNumberIds.includes(conversation.whatsappNumberId));
+    const visibleConversationIds = new Set(allConvs.map((conversation) => conversation.id));
+    const allMessages = allMessagesRaw.filter((message) => visibleConversationIds.has(message.conversationId));
+    const allNumbers = allNumbersRaw.filter((number) => visibleNumberIds.includes(number.id));
+    const conversationById = new Map(allConvs.map((conversation) => [conversation.id, conversation]));
+    const contactById = new Map(allContacts.map((contact) => [contact.id, contact]));
+    const userById = new Map(allUsers.map((user) => [user.id, user]));
+    const now = /* @__PURE__ */ new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const isToday = (value) => {
+      if (!value) return false;
+      const date = value instanceof Date ? value : new Date(value);
+      return !Number.isNaN(date.getTime()) && date.getTime() >= todayStart.getTime();
+    };
+    const successfulOutbound = /* @__PURE__ */ new Set(["sent", "delivered", "read"]);
+    const sortedMessages = [...allMessages].sort((left, right) => {
+      const leftTime = new Date(left.timestamp || 0).getTime();
+      const rightTime = new Date(right.timestamp || 0).getTime();
+      return leftTime === rightTime ? left.id - right.id : leftTime - rightTime;
+    });
+    const pendingInboundByConversation = /* @__PURE__ */ new Map();
+    const responseSamples = [];
+    for (const message of sortedMessages) {
+      const timestamp2 = new Date(message.timestamp || 0);
+      if (Number.isNaN(timestamp2.getTime())) continue;
+      if (message.sender === "contact") {
+        if (!pendingInboundByConversation.has(message.conversationId)) {
+          pendingInboundByConversation.set(message.conversationId, timestamp2);
+        }
+        continue;
+      }
+      if (message.replyType === "handover" || !successfulOutbound.has(String(message.status || ""))) {
+        continue;
+      }
+      const pendingInbound = pendingInboundByConversation.get(message.conversationId);
+      if (!pendingInbound || timestamp2.getTime() < pendingInbound.getTime()) continue;
+      responseSamples.push({
+        conversationId: message.conversationId,
+        minutes: Math.max(0, (timestamp2.getTime() - pendingInbound.getTime()) / 6e4),
+        responseAt: timestamp2,
+        agentId: message.agentId || null,
+        replyType: message.replyType
+      });
+      pendingInboundByConversation.delete(message.conversationId);
+    }
+    const waitingConversations = allConvs.filter(
+      (conversation) => conversation.status !== "closed" && Boolean(conversation.awaitingResponseSince)
+    );
+    const overdueConversations = waitingConversations.filter((conversation) => {
+      const dueAt = conversation.responseDueAt ? new Date(conversation.responseDueAt) : null;
+      return Boolean(conversation.slaBreachedAt) || Boolean(dueAt && !Number.isNaN(dueAt.getTime()) && dueAt.getTime() <= now.getTime());
+    });
+    const dueSoonConversations = waitingConversations.filter((conversation) => {
+      if (conversation.slaBreachedAt || !conversation.responseDueAt) return false;
+      const dueAt = new Date(conversation.responseDueAt);
+      if (Number.isNaN(dueAt.getTime())) return false;
+      const remainingMs = dueAt.getTime() - now.getTime();
+      return remainingMs > 0 && remainingMs <= SLA_DUE_SOON_MINUTES * 60 * 1e3;
+    });
+    const unassignedAwaiting = waitingConversations.filter((conversation) => !conversation.assignedUserId);
+    const waitingMinutesFor = (conversation) => {
+      if (!conversation.awaitingResponseSince) return 0;
+      const waitingSince = new Date(conversation.awaitingResponseSince);
+      if (Number.isNaN(waitingSince.getTime())) return 0;
+      return Math.max(0, Math.floor((now.getTime() - waitingSince.getTime()) / 6e4));
+    };
+    const todayResponseSamples = responseSamples.filter((sample) => sample.responseAt.getTime() >= todayStart.getTime());
+    const avgFirstResponseMinutes = todayResponseSamples.length > 0 ? Number((todayResponseSamples.reduce((sum, sample) => sum + sample.minutes, 0) / todayResponseSamples.length).toFixed(1)) : null;
+    const withinSlaPercent = todayResponseSamples.length > 0 ? Math.round(todayResponseSamples.filter((sample) => sample.minutes <= RECRUITER_RESPONSE_SLA_MINUTES).length / todayResponseSamples.length * 100) : null;
+    const todayMessages = allMessages.filter((message) => isToday(message.timestamp));
+    const numberSummary = allNumbers.map((number) => {
+      const conversationIds = new Set(
+        allConvs.filter((conversation) => conversation.whatsappNumberId === number.id).map((conversation) => conversation.id)
+      );
+      return {
+        name: number.displayName,
+        inbound: todayMessages.filter((message) => conversationIds.has(message.conversationId) && message.sender === "contact").length,
+        outbound: todayMessages.filter((message) => conversationIds.has(message.conversationId) && message.sender !== "contact" && successfulOutbound.has(String(message.status || ""))).length
+      };
+    });
+    const activeUsers = allUsers.filter((user) => user.isActive);
+    const userReplySummary = activeUsers.map((user) => ({
+      name: user.name,
+      manual: todayMessages.filter((message) => message.agentId === user.id && message.replyType === "manual" && successfulOutbound.has(String(message.status || ""))).length,
+      ai: todayMessages.filter((message) => message.agentId === user.id && message.replyType === "ai" && successfulOutbound.has(String(message.status || ""))).length
+    })).filter((user) => user.manual > 0 || user.ai > 0);
+    const recruiterPerformance = activeUsers.map((user) => {
+      const userResponseSamples = todayResponseSamples.filter((sample) => sample.agentId === user.id);
+      return {
+        userId: user.id,
+        name: user.name,
+        assignedOpen: allConvs.filter((conversation) => conversation.assignedUserId === user.id && conversation.status !== "closed").length,
+        awaiting: waitingConversations.filter((conversation) => conversation.assignedUserId === user.id).length,
+        overdue: overdueConversations.filter((conversation) => conversation.assignedUserId === user.id).length,
+        manualRepliesToday: todayMessages.filter((message) => message.agentId === user.id && message.replyType === "manual" && successfulOutbound.has(String(message.status || ""))).length,
+        avgResponseMinutes: userResponseSamples.length > 0 ? Number((userResponseSamples.reduce((sum, sample) => sum + sample.minutes, 0) / userResponseSamples.length).toFixed(1)) : null,
+        withinSlaPercent: userResponseSamples.length > 0 ? Math.round(userResponseSamples.filter((sample) => sample.minutes <= RECRUITER_RESPONSE_SLA_MINUTES).length / userResponseSamples.length * 100) : null
+      };
+    }).filter((user) => user.assignedOpen > 0 || user.manualRepliesToday > 0 || user.awaiting > 0).sort((left, right) => right.overdue - left.overdue || right.awaiting - left.awaiting || right.manualRepliesToday - left.manualRepliesToday);
+    const overdueQueue = [...overdueConversations].sort((left, right) => waitingMinutesFor(right) - waitingMinutesFor(left)).slice(0, 8).map((conversation) => ({
+      conversationId: conversation.id,
+      contactName: contactById.get(conversation.contactId)?.name || contactById.get(conversation.contactId)?.phoneNumber || `Conversation #${conversation.id}`,
+      assignedUserName: conversation.assignedUserId ? userById.get(conversation.assignedUserId)?.name || "Assigned recruiter" : "Unassigned",
+      waitingMinutes: waitingMinutesFor(conversation),
+      status: conversation.status
+    }));
     res.json({
-      todayMessages: todayMsg,
-      openConversations: openCount,
-      unreadConversations: unreadCount,
-      needingHumanReply: humanHandoverCount,
-      aiSuggestionsPending,
-      workflowActive: workflowActiveCount,
-      numberSummary: [],
-      userReplySummary: []
+      todayMessages: todayMessages.length,
+      openConversations: allConvs.filter((conversation) => conversation.status !== "closed").length,
+      unreadConversations: allConvs.filter((conversation) => conversation.isUnread).length,
+      needingHumanReply: allConvs.filter((conversation) => conversation.status === "human_handover").length,
+      aiSuggestionsPending: allConvs.filter((conversation) => conversation.status === "ai_suggested").length,
+      workflowActive: allConvs.filter((conversation) => conversation.status === "workflow_active").length,
+      awaitingResponse: waitingConversations.length,
+      overdueConversations: overdueConversations.length,
+      dueSoonConversations: dueSoonConversations.length,
+      unassignedAwaiting: unassignedAwaiting.length,
+      avgFirstResponseMinutes,
+      withinSlaPercent,
+      oldestWaitingMinutes: waitingConversations.reduce((max, conversation) => Math.max(max, waitingMinutesFor(conversation)), 0),
+      responseSlaMinutes: RECRUITER_RESPONSE_SLA_MINUTES,
+      unassignedEscalationMinutes: UNASSIGNED_ESCALATION_MINUTES,
+      numberSummary,
+      userReplySummary,
+      recruiterPerformance,
+      overdueQueue,
+      generatedAt: now.toISOString()
     });
   } catch (error) {
+    console.error("Failed to load dashboard SLA metrics:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -4712,6 +5110,12 @@ async function startServer() {
   try {
     await ensureSeedData();
     await ensureMessageActionSchema();
+    await runRecruiterSlaMonitor();
+    const recruiterSlaTimer = setInterval(
+      () => void runRecruiterSlaMonitor(),
+      SLA_MONITOR_INTERVAL_SECONDS * 1e3
+    );
+    recruiterSlaTimer.unref?.();
     app.use("/api", (req, res) => {
       return res.status(404).json({
         error: `API endpoint not found: ${req.method} ${req.originalUrl}`

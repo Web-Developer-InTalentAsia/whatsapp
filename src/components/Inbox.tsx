@@ -114,6 +114,56 @@ function formatServiceWindowRemaining(totalSeconds: number) {
   return "less than 1 minute remaining";
 }
 
+function getConversationSlaView(conversation: Conversation | null, nowMs: number) {
+  if (!conversation?.awaitingResponseSince || conversation.status === "closed") {
+    return {
+      isWaiting: false,
+      state: "none" as const,
+      remainingSeconds: 0,
+      waitingSeconds: 0,
+      dueAt: null as Date | null,
+    };
+  }
+
+  const waitingSince = new Date(conversation.awaitingResponseSince);
+  const dueAt = conversation.responseDueAt ? new Date(conversation.responseDueAt) : null;
+  if (Number.isNaN(waitingSince.getTime()) || !dueAt || Number.isNaN(dueAt.getTime())) {
+    return {
+      isWaiting: false,
+      state: "none" as const,
+      remainingSeconds: 0,
+      waitingSeconds: 0,
+      dueAt: null as Date | null,
+    };
+  }
+
+  const remainingSeconds = Math.floor((dueAt.getTime() - nowMs) / 1000);
+  const waitingSeconds = Math.max(0, Math.floor((nowMs - waitingSince.getTime()) / 1000));
+  const dueSoonThresholdSeconds = 5 * 60;
+  const state = conversation.slaBreachedAt || remainingSeconds <= 0
+    ? "overdue"
+    : remainingSeconds <= dueSoonThresholdSeconds
+      ? "due_soon"
+      : "on_track";
+
+  return {
+    isWaiting: true,
+    state,
+    remainingSeconds,
+    waitingSeconds,
+    dueAt,
+  };
+}
+
+function formatSlaDuration(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(Math.abs(totalSeconds)));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return "<1m";
+}
+
 export default function Inbox({ token, currentUser, initialConversationId, onInitialConversationHandled }: InboxProps) {
   // States
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -173,6 +223,7 @@ export default function Inbox({ token, currentUser, initialConversationId, onIni
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
 
   const serviceWindow = getServiceWindowView(selectedConversation, serviceWindowClock);
+  const selectedSla = getConversationSlaView(selectedConversation, serviceWindowClock);
   const freeFormMessagingAllowed = serviceWindow.isOpen;
 
   useEffect(() => {
@@ -1138,6 +1189,8 @@ export default function Inbox({ token, currentUser, initialConversationId, onIni
             { id: "human_handover", label: "Recruiter" },
             { id: "ai_suggested", label: "AI Suggestions" },
             { id: "workflow_active", label: "Workflow" },
+            { id: "overdue", label: "SLA Overdue" },
+            { id: "unassigned", label: "Unassigned" },
             { id: "closed", label: "Closed" }
           ].map((item) => (
             <button
@@ -1164,6 +1217,7 @@ export default function Inbox({ token, currentUser, initialConversationId, onIni
             conversations.map((conv) => {
               const isSelected = selectedConversation?.id === conv.id;
               const formattedTime = new Date(conv.lastMessageAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              const conversationSla = getConversationSlaView(conv, serviceWindowClock);
               
               // Status Styling
               let statusLabel = "";
@@ -1218,7 +1272,20 @@ export default function Inbox({ token, currentUser, initialConversationId, onIni
                     <span className="text-[10px] text-zinc-500 font-medium truncate max-w-[120px]">
                       via {conv.whatsappNumberName}
                     </span>
-                    <div className="flex gap-1 shrink-0">
+                    <div className="flex gap-1 shrink-0 flex-wrap justify-end">
+                      {conversationSla.isWaiting && (
+                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                          conversationSla.state === "overdue"
+                            ? "bg-red-950/50 text-red-300 border-red-800/60"
+                            : conversationSla.state === "due_soon"
+                              ? "bg-amber-950/50 text-amber-300 border-amber-800/60"
+                              : "bg-sky-950/40 text-sky-300 border-sky-900/50"
+                        }`}>
+                          {conversationSla.state === "overdue"
+                            ? `Overdue ${formatSlaDuration(conversationSla.waitingSeconds)}`
+                            : `SLA ${formatSlaDuration(conversationSla.remainingSeconds)}`}
+                        </span>
+                      )}
                       {conv.isUnread && (
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-amber-950/40 text-amber-400 border-amber-900/40">
                           Unread
@@ -1291,6 +1358,51 @@ export default function Inbox({ token, currentUser, initialConversationId, onIni
                 </select>
               </div>
             </div>
+
+            {selectedSla.isWaiting && (
+              <div className={`mx-6 mt-4 rounded-xl border px-4 py-3 flex items-center justify-between gap-4 ${
+                selectedSla.state === "overdue"
+                  ? "border-red-500/35 bg-red-500/10"
+                  : selectedSla.state === "due_soon"
+                    ? "border-amber-500/35 bg-amber-500/10"
+                    : "border-sky-500/30 bg-sky-500/10"
+              }`}>
+                <div className="flex items-start gap-2.5">
+                  <Clock className={`h-4 w-4 mt-0.5 shrink-0 ${
+                    selectedSla.state === "overdue"
+                      ? "text-red-400"
+                      : selectedSla.state === "due_soon"
+                        ? "text-amber-400"
+                        : "text-sky-400"
+                  }`} />
+                  <div>
+                    <p className={`text-xs font-bold ${
+                      selectedSla.state === "overdue"
+                        ? "text-red-300"
+                        : selectedSla.state === "due_soon"
+                          ? "text-amber-300"
+                          : "text-sky-300"
+                    }`}>
+                      {selectedSla.state === "overdue"
+                        ? `Recruiter response SLA overdue by ${formatSlaDuration(selectedSla.remainingSeconds)}`
+                        : `Recruiter response due in ${formatSlaDuration(selectedSla.remainingSeconds)}`}
+                    </p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">
+                      Waiting {formatSlaDuration(selectedSla.waitingSeconds)} · {selectedConversation.assignedUserId ? "Assigned conversation" : "Unassigned — assign a recruiter now"}
+                    </p>
+                  </div>
+                </div>
+                <span className={`shrink-0 rounded-lg border px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide ${
+                  selectedSla.state === "overdue"
+                    ? "border-red-500/40 text-red-300"
+                    : selectedSla.state === "due_soon"
+                      ? "border-amber-500/40 text-amber-300"
+                      : "border-sky-500/40 text-sky-300"
+                }`}>
+                  {selectedSla.state === "overdue" ? "Overdue" : selectedSla.state === "due_soon" ? "Due Soon" : "On Track"}
+                </span>
+              </div>
+            )}
 
             {selectedConversation.status === "human_handover" && (
               <div className="mx-6 mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-center justify-between gap-4">

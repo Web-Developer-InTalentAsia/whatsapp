@@ -65,11 +65,31 @@ export interface Conversation {
   isUnread: boolean;
   lastMessageAt: string;
   lastInboundAt?: string | null;
+  awaitingResponseSince?: string | null;
+  responseDueAt?: string | null;
+  slaBreachedAt?: string | null;
+  lastSlaAlertAt?: string | null;
+  unassignedEscalatedAt?: string | null;
+  lastHumanResponseAt?: string | null;
+  awaitingRecruiterResponse?: boolean;
+  slaState?: 'none' | 'on_track' | 'due_soon' | 'overdue';
+  slaRemainingSeconds?: number;
+  waitingSeconds?: number;
+  isUnassignedAwaiting?: boolean;
   serviceWindowOpen?: boolean;
   serviceWindowExpiresAt?: string | null;
   serviceWindowRemainingSeconds?: number;
   createdAt?: string;
   contact?: Contact;
+  contactName?: string | null;
+  contactPhone?: string;
+  contactTags?: string;
+  contactType?: 'candidate' | 'client';
+  contactLocation?: string;
+  whatsappNumberName?: string;
+  whatsappNumberPhone?: string;
+  assignedUserName?: string;
+  recruiterResponseSlaMinutes?: number;
 }
 
 export interface Message {
@@ -170,7 +190,7 @@ export interface AppNotification {
   userId: number;
   whatsappNumberId?: number | null;
   conversationId?: number | null;
-  type: 'new_inbound' | 'human_handover' | 'assignment' | 'delivery_failed' | 'system';
+  type: 'new_inbound' | 'human_handover' | 'assignment' | 'delivery_failed' | 'sla_overdue' | 'unassigned_escalation' | 'system';
   title: string;
   message: string;
   severity: 'info' | 'success' | 'warning' | 'critical';
