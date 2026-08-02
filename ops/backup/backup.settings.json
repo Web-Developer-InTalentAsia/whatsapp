@@ -1,0 +1,12 @@
+{
+  "ProjectPath": "C:\\Users\\Administrator\\intalent_whatsapp",
+  "BackupRoot": "C:\\Backups\\intalent_whatsapp",
+  "Pm2ProcessName": "intalent_whatsapp",
+  "DailyBackupTime": "02:00",
+  "DailyRetentionDays": 14,
+  "WeeklyRetentionWeeks": 8,
+  "MonthlyRetentionMonths": 6,
+  "IncludeEncryptedEnv": true,
+  "PgBinPath": "",
+  "SecondaryBackupPath": ""
+}
