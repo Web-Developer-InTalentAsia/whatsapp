@@ -1,0 +1,17 @@
+{
+  "ProjectPath": "C:\\Users\\Administrator\\intalent_whatsapp",
+  "Pm2ProcessName": "intalent_whatsapp",
+  "Pm2Home": "C:\\Users\\Administrator\\.pm2",
+  "HealthUrl": "https://hrm.intalent.asia/api/health",
+  "RootUrl": "https://hrm.intalent.asia/",
+  "ReleaseRoot": "C:\\Backups\\intalent_whatsapp\\releases",
+  "StateRoot": "C:\\ProgramData\\InTalentWhatsAppRelease",
+  "HealthTimeoutSeconds": 15,
+  "HealthAttempts": 6,
+  "HealthRetryDelaySeconds": 5,
+  "SnapshotRetentionCount": 10,
+  "RunNpmCiWhenLockChanges": true,
+  "AutoRollback": true,
+  "NpmCommandPath": "",
+  "Pm2CommandPath": ""
+}
