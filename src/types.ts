@@ -158,6 +158,7 @@ export interface Workflow {
   startMode: 'keyword' | 'default';
   isDefault: boolean;
   restartOnClosedMessage: boolean;
+  fallbackOnUnmatchedMessage: boolean;
   welcomeMessage: string;
   isActive: boolean;
   steps: string; // JSON string of WorkflowStep[]

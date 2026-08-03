@@ -144,6 +144,7 @@ export const workflows = pgTable('workflows', {
   startMode: text('start_mode').notNull().default('keyword'), // 'keyword' | 'default'
   isDefault: boolean('is_default').notNull().default(false),
   restartOnClosedMessage: boolean('restart_on_closed_message').notNull().default(false),
+  fallbackOnUnmatchedMessage: boolean('fallback_on_unmatched_message').notNull().default(false),
   welcomeMessage: text('welcome_message').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   steps: text('steps').notNull().default('[]'), // JSON string of steps

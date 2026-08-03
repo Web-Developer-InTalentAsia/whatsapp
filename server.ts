@@ -2245,15 +2245,16 @@ async function ensureSeedData() {
 }
 
 async function ensureMessageActionSchema() {
-  // Step 19.1: workflow start rules. Existing workflows remain exact-keyword
-  // workflows. A WhatsApp line can have one default catch-all workflow that
-  // starts on a contact's first message and, optionally, when a closed chat is
-  // reopened by a new inbound message.
+  // Catch-all workflow start rules. Existing workflows remain exact-keyword
+  // workflows. A WhatsApp line can have one default workflow that can start on
+  // a contact's first message, when a closed chat is reopened, and optionally
+  // for any unmatched inbound message when no workflow session is active.
   await db.execute(sql`
     ALTER TABLE workflows
       ADD COLUMN IF NOT EXISTS start_mode text NOT NULL DEFAULT 'keyword',
       ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false,
-      ADD COLUMN IF NOT EXISTS restart_on_closed_message boolean NOT NULL DEFAULT false
+      ADD COLUMN IF NOT EXISTS restart_on_closed_message boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS fallback_on_unmatched_message boolean NOT NULL DEFAULT false
   `);
 
   await db.execute(sql`
@@ -2279,7 +2280,8 @@ async function ensureMessageActionSchema() {
     UPDATE workflows
       SET is_default = false,
           start_mode = 'keyword',
-          restart_on_closed_message = false
+          restart_on_closed_message = false,
+          fallback_on_unmatched_message = false
       WHERE id IN (
         SELECT id FROM ranked_defaults WHERE default_rank > 1
       )
@@ -3909,6 +3911,7 @@ app.post("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req: any
     triggerKeyword,
     startMode: requestedStartMode,
     restartOnClosedMessage,
+    fallbackOnUnmatchedMessage,
     welcomeMessage,
     isActive,
     steps,
@@ -3938,6 +3941,7 @@ app.post("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req: any
 
   const isDefault = startMode === "default";
   const restartClosed = isDefault && Boolean(restartOnClosedMessage);
+  const fallbackUnmatched = isDefault && Boolean(fallbackOnUnmatchedMessage);
 
   try {
     const newWorkflow = await db.transaction(async (tx) => {
@@ -3949,6 +3953,7 @@ app.post("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req: any
             isDefault: false,
             startMode: "keyword",
             restartOnClosedMessage: false,
+            fallbackOnUnmatchedMessage: false,
           })
           .where(eq(schema.workflows.whatsappNumberId, numberId));
       }
@@ -3960,6 +3965,7 @@ app.post("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req: any
         startMode,
         isDefault,
         restartOnClosedMessage: restartClosed,
+        fallbackOnUnmatchedMessage: fallbackUnmatched,
         welcomeMessage: String(welcomeMessage).trim(),
         isActive: isActive !== undefined ? Boolean(isActive) : true,
         steps: typeof steps === "string" ? steps : JSON.stringify(steps),
@@ -3982,6 +3988,7 @@ app.post("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req: any
           startMode,
           isDefault,
           restartOnClosedMessage: restartClosed,
+          fallbackOnUnmatchedMessage: fallbackUnmatched,
         },
       },
     );
@@ -4043,6 +4050,11 @@ app.put("/api/whatsapp_numbers/:id/workflows/:workflowId", authenticateJWT, asyn
         ? req.body.restartOnClosedMessage
         : existing.restartOnClosedMessage,
     );
+    const fallbackUnmatched = isDefault && Boolean(
+      req.body.fallbackOnUnmatchedMessage !== undefined
+        ? req.body.fallbackOnUnmatchedMessage
+        : existing.fallbackOnUnmatchedMessage,
+    );
 
     const updated = await db.transaction(async (tx) => {
       if (isDefault) {
@@ -4051,6 +4063,7 @@ app.put("/api/whatsapp_numbers/:id/workflows/:workflowId", authenticateJWT, asyn
             isDefault: false,
             startMode: "keyword",
             restartOnClosedMessage: false,
+            fallbackOnUnmatchedMessage: false,
           })
           .where(and(
             eq(schema.workflows.whatsappNumberId, numberId),
@@ -4064,6 +4077,7 @@ app.put("/api/whatsapp_numbers/:id/workflows/:workflowId", authenticateJWT, asyn
         startMode,
         isDefault,
         restartOnClosedMessage: restartClosed,
+        fallbackOnUnmatchedMessage: fallbackUnmatched,
         welcomeMessage: String(mergedWelcome).trim(),
       };
       if (req.body.isActive !== undefined) updates.isActive = Boolean(req.body.isActive);
@@ -4098,6 +4112,7 @@ app.put("/api/whatsapp_numbers/:id/workflows/:workflowId", authenticateJWT, asyn
           startMode,
           isDefault,
           restartOnClosedMessage: restartClosed,
+          fallbackOnUnmatchedMessage: fallbackUnmatched,
         },
       },
     );
@@ -5508,7 +5523,7 @@ app.post("/api/ai-suggestions/train", authenticateJWT, async (req: any, res) => 
 });
 
 // --- WORKFLOW ENGINE & SESSIONS TRIGGER ---
-type DefaultWorkflowStartReason = "first_message" | "reopened" | null;
+type DefaultWorkflowStartReason = "first_message" | "reopened" | "unmatched" | null;
 
 async function runWorkflowStep(
   convId: number,
@@ -5530,41 +5545,11 @@ async function runWorkflowStep(
 
     if (!session) {
       let wf: typeof schema.workflows.$inferSelect | undefined;
-      let workflowStartSource: "default_first_message" | "default_reopened" | "keyword" = "keyword";
+      let workflowStartSource: "default_first_message" | "default_reopened" | "default_unmatched" | "keyword" = "keyword";
 
-      // A default catch-all workflow is evaluated only for a brand-new
-      // conversation, or for a previously closed conversation when the admin
-      // explicitly enabled restart-on-reopen. It is never repeated for every
-      // message in an already-open conversation.
-      if (defaultStartReason) {
-        const defaultConditions = [
-          eq(schema.workflows.whatsappNumberId, numId),
-          eq(schema.workflows.isActive, true),
-          eq(schema.workflows.isDefault, true),
-          eq(schema.workflows.startMode, "default"),
-        ];
-
-        if (defaultStartReason === "reopened") {
-          defaultConditions.push(eq(schema.workflows.restartOnClosedMessage, true));
-        }
-
-        [wf] = await db.select().from(schema.workflows)
-          .where(and(...defaultConditions))
-          .orderBy(asc(schema.workflows.id))
-          .limit(1);
-
-        if (wf) {
-          workflowStartSource = defaultStartReason === "reopened"
-            ? "default_reopened"
-            : "default_first_message";
-        }
-      }
-
-      // Exact-keyword workflows remain available. A default workflow may also
-      // have an optional keyword such as "menu" so a contact can restart it
-      // manually in an open conversation.
-      if (!wf && textLower) {
-        [wf] = await db.select().from(schema.workflows)
+      const findKeywordWorkflow = async () => {
+        if (!textLower) return undefined;
+        const [keywordWorkflow] = await db.select().from(schema.workflows)
           .where(and(
             eq(schema.workflows.whatsappNumberId, numId),
             eq(schema.workflows.isActive, true),
@@ -5572,7 +5557,57 @@ async function runWorkflowStep(
           ))
           .orderBy(asc(schema.workflows.id))
           .limit(1);
+        return keywordWorkflow;
+      };
+
+      const findDefaultWorkflow = async (reason: Exclude<DefaultWorkflowStartReason, null>) => {
+        const defaultConditions = [
+          eq(schema.workflows.whatsappNumberId, numId),
+          eq(schema.workflows.isActive, true),
+          eq(schema.workflows.isDefault, true),
+          eq(schema.workflows.startMode, "default"),
+        ];
+
+        if (reason === "reopened") {
+          defaultConditions.push(eq(schema.workflows.restartOnClosedMessage, true));
+        }
+        if (reason === "unmatched") {
+          defaultConditions.push(eq(schema.workflows.fallbackOnUnmatchedMessage, true));
+        }
+
+        const [defaultWorkflow] = await db.select().from(schema.workflows)
+          .where(and(...defaultConditions))
+          .orderBy(asc(schema.workflows.id))
+          .limit(1);
+        return defaultWorkflow;
+      };
+
+      // Brand-new and reopened chats intentionally begin with the default
+      // welcome menu. Open chats first respect any exact keyword workflow;
+      // only truly unmatched messages fall back to the default menu.
+      if (defaultStartReason === "first_message" || defaultStartReason === "reopened") {
+        wf = await findDefaultWorkflow(defaultStartReason);
+        if (wf) {
+          workflowStartSource = defaultStartReason === "reopened"
+            ? "default_reopened"
+            : "default_first_message";
+        }
+      }
+
+      if (!wf) {
+        wf = await findKeywordWorkflow();
         if (wf) workflowStartSource = "keyword";
+      }
+
+      // Do not swallow a direct human/recruiter request with the default menu.
+      // The deterministic handover handler runs immediately after workflows.
+      if (
+        !wf &&
+        defaultStartReason === "unmatched" &&
+        !isDirectHumanHandoverRequest(incomingText)
+      ) {
+        wf = await findDefaultWorkflow("unmatched");
+        if (wf) workflowStartSource = "default_unmatched";
       }
 
       if (!wf) {
@@ -5703,7 +5738,7 @@ async function runWorkflowStep(
         conversationId: convId,
         whatsappNumberId: numId,
         contactId,
-        content: "Sorry, I didn’t understand that. Please reply with one of the numbers shown above.",
+        content: `Sorry, I didn’t understand that. Please reply with one of the numbers shown below.\n\n${currentStep.questionText}`,
       });
       return true;
     }
@@ -6730,7 +6765,7 @@ app.post("/webhooks/whatsapp/:numberId", async (req: any, res) => {
           inboundMetaMessageId: incomingMetaMessageId || null,
           defaultWorkflowStartReason: isNewConversation
             ? "first_message"
-            : (wasClosedConversation ? "reopened" : null),
+            : (wasClosedConversation ? "reopened" : "unmatched"),
         });
 
         // The inbound message remains unread until a recruiter opens the chat.

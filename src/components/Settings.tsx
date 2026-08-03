@@ -16,6 +16,7 @@ type WorkflowFormState = {
   startMode: "keyword" | "default";
   isDefault: boolean;
   restartOnClosedMessage: boolean;
+  fallbackOnUnmatchedMessage: boolean;
   welcomeMessage: string;
   isActive: boolean;
   steps: WorkflowStep[];
@@ -27,6 +28,7 @@ const createEmptyWorkflowForm = (): WorkflowFormState => ({
   startMode: "keyword",
   isDefault: false,
   restartOnClosedMessage: false,
+  fallbackOnUnmatchedMessage: false,
   welcomeMessage: "",
   isActive: true,
   steps: [],
@@ -442,6 +444,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
       startMode: wf.startMode || "keyword",
       isDefault: Boolean(wf.isDefault),
       restartOnClosedMessage: Boolean(wf.restartOnClosedMessage),
+      fallbackOnUnmatchedMessage: Boolean(wf.fallbackOnUnmatchedMessage),
       welcomeMessage: wf.welcomeMessage,
       isActive: wf.isActive,
       steps: JSON.parse(wf.steps)
@@ -1211,9 +1214,11 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                         </span>
                         <span className="text-[10px] text-zinc-500 mt-1">
                           {wf.startMode === "default"
-                            ? (wf.restartOnClosedMessage
-                              ? "Catch-all: first message + closed chat reopen"
-                              : "Catch-all: contact's first message")
+                            ? (wf.fallbackOnUnmatchedMessage
+                              ? "Catch-all: first + closed + unmatched messages"
+                              : (wf.restartOnClosedMessage
+                                ? "Catch-all: first message + closed chat reopen"
+                                : "Catch-all: contact's first message"))
                             : `Keyword: "${wf.triggerKeyword}"`}
                         </span>
                       </button>
@@ -1250,7 +1255,9 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                       <select
                         value={wfForm.startMode === "keyword"
                           ? "keyword"
-                          : (wfForm.restartOnClosedMessage ? "default_reopened" : "default_first")}
+                          : (wfForm.fallbackOnUnmatchedMessage
+                            ? "default_unmatched"
+                            : (wfForm.restartOnClosedMessage ? "default_reopened" : "default_first"))}
                         onChange={(e) => {
                           const selectedRule = e.target.value;
                           const isCatchAll = selectedRule !== "keyword";
@@ -1258,7 +1265,8 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                             ...wfForm,
                             startMode: isCatchAll ? "default" : "keyword",
                             isDefault: isCatchAll,
-                            restartOnClosedMessage: selectedRule === "default_reopened",
+                            restartOnClosedMessage: selectedRule === "default_reopened" || selectedRule === "default_unmatched",
+                            fallbackOnUnmatchedMessage: selectedRule === "default_unmatched",
                           });
                         }}
                         className="w-full border border-zinc-850 rounded-lg p-2 bg-[#0c0c0e] text-zinc-100 text-xs focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
@@ -1266,9 +1274,10 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                         <option value="keyword">Exact keyword only</option>
                         <option value="default_first">Any contact's first message</option>
                         <option value="default_reopened">First message + new message after chat is closed</option>
+                        <option value="default_unmatched">First message + closed chat + any unmatched open-chat message</option>
                       </select>
                       <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
-                        Catch-all rules do not require the customer to type a keyword. Only one default workflow can be active for each WhatsApp number.
+                        The unmatched-message rule starts this menu when an open chat has no active workflow and no exact keyword matches. Recruiter handovers are never interrupted.
                       </p>
                     </div>
 
@@ -1300,7 +1309,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
 
                     {wfForm.startMode === "default" && (
                       <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-[10px] leading-relaxed text-amber-300">
-                        This workflow becomes the default welcome flow for {selectedNumber.displayName}. Existing active workflow sessions and recruiter handovers will not be interrupted.
+                        This workflow becomes the default welcome flow for {selectedNumber.displayName}. Active workflow sessions continue normally; invalid menu replies repeat the current options, and recruiter handovers remain paused.
                       </div>
                     )}
 
