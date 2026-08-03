@@ -140,7 +140,10 @@ export const workflows = pgTable('workflows', {
   id: serial('id').primaryKey(),
   whatsappNumberId: integer('whatsapp_number_id').references(() => whatsappNumbers.id, { onDelete: 'cascade' }).notNull(),
   name: text('name').notNull(),
-  triggerKeyword: text('trigger_keyword').notNull(),
+  triggerKeyword: text('trigger_keyword').notNull().default(''),
+  startMode: text('start_mode').notNull().default('keyword'), // 'keyword' | 'default'
+  isDefault: boolean('is_default').notNull().default(false),
+  restartOnClosedMessage: boolean('restart_on_closed_message').notNull().default(false),
   welcomeMessage: text('welcome_message').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   steps: text('steps').notNull().default('[]'), // JSON string of steps

@@ -155,6 +155,9 @@ export interface Workflow {
   whatsappNumberId: number;
   name: string;
   triggerKeyword: string;
+  startMode: 'keyword' | 'default';
+  isDefault: boolean;
+  restartOnClosedMessage: boolean;
   welcomeMessage: string;
   isActive: boolean;
   steps: string; // JSON string of WorkflowStep[]

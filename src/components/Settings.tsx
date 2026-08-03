@@ -10,6 +10,28 @@ interface SettingsProps {
   currentUser: any;
 }
 
+type WorkflowFormState = {
+  name: string;
+  triggerKeyword: string;
+  startMode: "keyword" | "default";
+  isDefault: boolean;
+  restartOnClosedMessage: boolean;
+  welcomeMessage: string;
+  isActive: boolean;
+  steps: WorkflowStep[];
+};
+
+const createEmptyWorkflowForm = (): WorkflowFormState => ({
+  name: "",
+  triggerKeyword: "",
+  startMode: "keyword",
+  isDefault: false,
+  restartOnClosedMessage: false,
+  welcomeMessage: "",
+  isActive: true,
+  steps: [],
+});
+
 export default function Settings({ token, currentUser }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<"numbers" | "ai" | "workflows" | "users" | "quick_replies">("numbers");
   
@@ -46,9 +68,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
   // 3. Workflows State
   const [workflowsList, setWorkflowsList] = useState<Workflow[]>([]);
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
-  const [wfForm, setWfForm] = useState({
-    name: "", triggerKeyword: "", welcomeMessage: "", isActive: true, steps: [] as WorkflowStep[]
-  });
+  const [wfForm, setWfForm] = useState<WorkflowFormState>(createEmptyWorkflowForm());
   const [activeStepEdit, setActiveStepEdit] = useState<WorkflowStep | null>(null);
 
   // 4. User Management State (Super Admin Only)
@@ -136,7 +156,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
           handleSelectWorkflow(wfData[0]);
         } else {
           setSelectedWorkflow(null);
-          setWfForm({ name: "", triggerKeyword: "", welcomeMessage: "", isActive: true, steps: [] });
+          setWfForm(createEmptyWorkflowForm());
         }
       }
 
@@ -418,7 +438,10 @@ export default function Settings({ token, currentUser }: SettingsProps) {
     setSelectedWorkflow(wf);
     setWfForm({
       name: wf.name,
-      triggerKeyword: wf.triggerKeyword,
+      triggerKeyword: wf.triggerKeyword || "",
+      startMode: wf.startMode || "keyword",
+      isDefault: Boolean(wf.isDefault),
+      restartOnClosedMessage: Boolean(wf.restartOnClosedMessage),
       welcomeMessage: wf.welcomeMessage,
       isActive: wf.isActive,
       steps: JSON.parse(wf.steps)
@@ -427,8 +450,16 @@ export default function Settings({ token, currentUser }: SettingsProps) {
   };
 
   const handleSaveWorkflow = async () => {
-    if (!selectedNumber || !wfForm.name || !wfForm.triggerKeyword) {
-      alert("Name and Trigger keyword are required.");
+    if (!selectedNumber || !wfForm.name.trim() || !wfForm.welcomeMessage.trim()) {
+      alert("Workflow name and welcome message are required.");
+      return;
+    }
+    if (wfForm.startMode === "keyword" && !wfForm.triggerKeyword.trim()) {
+      alert("A trigger keyword is required for an exact-keyword workflow.");
+      return;
+    }
+    if (wfForm.steps.length === 0) {
+      alert("Add at least one workflow step before saving.");
       return;
     }
     try {
@@ -1170,14 +1201,27 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                             : "bg-[#09090b] border border-zinc-850 text-zinc-350 hover:bg-zinc-900"
                         }`}
                       >
-                        <span>{wf.name}</span>
-                        <span className="text-[10px] text-zinc-500 font-mono mt-1">keyword: "{wf.triggerKeyword}"</span>
+                        <span className="flex items-center gap-2">
+                          {wf.name}
+                          {wf.isDefault && (
+                            <span className="rounded-full border border-emerald-800 bg-emerald-950/50 px-2 py-0.5 text-[9px] uppercase tracking-wider text-emerald-400">
+                              Default
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[10px] text-zinc-500 mt-1">
+                          {wf.startMode === "default"
+                            ? (wf.restartOnClosedMessage
+                              ? "Catch-all: first message + closed chat reopen"
+                              : "Catch-all: contact's first message")
+                            : `Keyword: "${wf.triggerKeyword}"`}
+                        </span>
                       </button>
                     ))}
                     <button
                       onClick={() => {
                         setSelectedWorkflow(null);
-                        setWfForm({ name: "New Workflow Builder", triggerKeyword: "apply", welcomeMessage: "Welcome!", isActive: true, steps: [] });
+                        setWfForm({ ...createEmptyWorkflowForm(), name: "New Workflow Builder", triggerKeyword: "apply", welcomeMessage: "Welcome!" });
                         setActiveStepEdit(null);
                       }}
                       className="w-full py-2.5 border border-dashed border-zinc-750 text-zinc-400 rounded-xl flex items-center justify-center gap-1.5 text-xs transition hover:bg-zinc-900/60 cursor-pointer font-semibold"
@@ -1201,14 +1245,43 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                       />
                     </div>
                     
-                    <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-zinc-400 block mb-1 font-semibold">Workflow Start Rule</label>
+                      <select
+                        value={wfForm.startMode === "keyword"
+                          ? "keyword"
+                          : (wfForm.restartOnClosedMessage ? "default_reopened" : "default_first")}
+                        onChange={(e) => {
+                          const selectedRule = e.target.value;
+                          const isCatchAll = selectedRule !== "keyword";
+                          setWfForm({
+                            ...wfForm,
+                            startMode: isCatchAll ? "default" : "keyword",
+                            isDefault: isCatchAll,
+                            restartOnClosedMessage: selectedRule === "default_reopened",
+                          });
+                        }}
+                        className="w-full border border-zinc-850 rounded-lg p-2 bg-[#0c0c0e] text-zinc-100 text-xs focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                      >
+                        <option value="keyword">Exact keyword only</option>
+                        <option value="default_first">Any contact's first message</option>
+                        <option value="default_reopened">First message + new message after chat is closed</option>
+                      </select>
+                      <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
+                        Catch-all rules do not require the customer to type a keyword. Only one default workflow can be active for each WhatsApp number.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="text-zinc-400 block mb-1 font-semibold">Trigger Keyword</label>
+                        <label className="text-zinc-400 block mb-1 font-semibold">
+                          {wfForm.startMode === "keyword" ? "Trigger Keyword" : "Optional Menu Restart Keyword"}
+                        </label>
                         <input
                           type="text"
                           value={wfForm.triggerKeyword}
                           onChange={(e) => setWfForm({ ...wfForm, triggerKeyword: e.target.value })}
-                          placeholder="e.g. jobs"
+                          placeholder={wfForm.startMode === "keyword" ? "e.g. jobs" : "e.g. menu (optional)"}
                           className="w-full border border-zinc-850 rounded-lg p-2 bg-[#0c0c0e] text-zinc-100 text-xs font-mono focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
                         />
                       </div>
@@ -1224,6 +1297,12 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                         </label>
                       </div>
                     </div>
+
+                    {wfForm.startMode === "default" && (
+                      <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-[10px] leading-relaxed text-amber-300">
+                        This workflow becomes the default welcome flow for {selectedNumber.displayName}. Existing active workflow sessions and recruiter handovers will not be interrupted.
+                      </div>
+                    )}
 
                     <div>
                       <label className="text-zinc-400 block mb-1 font-semibold">Workflow Welcome Header</label>

@@ -215,7 +215,11 @@ var workflows = (0, import_pg_core.pgTable)("workflows", {
   id: (0, import_pg_core.serial)("id").primaryKey(),
   whatsappNumberId: (0, import_pg_core.integer)("whatsapp_number_id").references(() => whatsappNumbers.id, { onDelete: "cascade" }).notNull(),
   name: (0, import_pg_core.text)("name").notNull(),
-  triggerKeyword: (0, import_pg_core.text)("trigger_keyword").notNull(),
+  triggerKeyword: (0, import_pg_core.text)("trigger_keyword").notNull().default(""),
+  startMode: (0, import_pg_core.text)("start_mode").notNull().default("keyword"),
+  // 'keyword' | 'default'
+  isDefault: (0, import_pg_core.boolean)("is_default").notNull().default(false),
+  restartOnClosedMessage: (0, import_pg_core.boolean)("restart_on_closed_message").notNull().default(false),
   welcomeMessage: (0, import_pg_core.text)("welcome_message").notNull(),
   isActive: (0, import_pg_core.boolean)("is_active").notNull().default(true),
   steps: (0, import_pg_core.text)("steps").notNull().default("[]"),
@@ -1953,6 +1957,41 @@ async function ensureSeedData() {
 }
 async function ensureMessageActionSchema() {
   await db.execute(import_drizzle_orm2.sql`
+    ALTER TABLE workflows
+      ADD COLUMN IF NOT EXISTS start_mode text NOT NULL DEFAULT 'keyword',
+      ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS restart_on_closed_message boolean NOT NULL DEFAULT false
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    ALTER TABLE workflows
+      ALTER COLUMN trigger_keyword SET DEFAULT ''
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    UPDATE workflows
+      SET start_mode = 'keyword'
+      WHERE start_mode IS NULL OR start_mode NOT IN ('keyword', 'default')
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    WITH ranked_defaults AS (
+      SELECT id,
+        ROW_NUMBER() OVER (PARTITION BY whatsapp_number_id ORDER BY id) AS default_rank
+      FROM workflows
+      WHERE is_default = true
+    )
+    UPDATE workflows
+      SET is_default = false,
+          start_mode = 'keyword',
+          restart_on_closed_message = false
+      WHERE id IN (
+        SELECT id FROM ranked_defaults WHERE default_rank > 1
+      )
+  `);
+  await db.execute(import_drizzle_orm2.sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_one_default_per_number
+      ON workflows (whatsapp_number_id)
+      WHERE is_default = true
+  `);
+  await db.execute(import_drizzle_orm2.sql`
     ALTER TABLE conversations
       ADD COLUMN IF NOT EXISTS is_unread boolean NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS last_inbound_at timestamp,
@@ -3197,6 +3236,21 @@ app.put("/api/whatsapp_numbers/:id/ai-settings", authenticateJWT, requireRoles([
     res.status(500).json({ error: error.message });
   }
 });
+function normalizeWorkflowStartMode(value) {
+  return String(value || "keyword").trim().toLowerCase() === "default" ? "default" : "keyword";
+}
+function normalizeWorkflowTriggerKeyword(value) {
+  return String(value || "").trim().toLowerCase();
+}
+function validateWorkflowStartConfiguration(params) {
+  if (!String(params.name || "").trim() || !String(params.welcomeMessage || "").trim() || params.steps === void 0 || params.steps === null) {
+    return "Workflow name, welcome message, and steps are required.";
+  }
+  if (params.startMode === "keyword" && !normalizeWorkflowTriggerKeyword(params.triggerKeyword)) {
+    return "A trigger keyword is required for an exact-keyword workflow.";
+  }
+  return null;
+}
 app.get("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req, res) => {
   const { id } = req.params;
   try {
@@ -3207,53 +3261,163 @@ app.get("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req, res)
   }
 });
 app.post("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req, res) => {
-  const { id } = req.params;
-  const { name, triggerKeyword, welcomeMessage, isActive, steps } = req.body;
-  if (!name || !triggerKeyword || !welcomeMessage || !steps) {
-    return res.status(400).json({ error: "Missing required workflow fields." });
+  const numberId = Number(req.params.id);
+  const {
+    name,
+    triggerKeyword,
+    startMode: requestedStartMode,
+    restartOnClosedMessage,
+    welcomeMessage,
+    isActive,
+    steps
+  } = req.body;
+  if (!Number.isInteger(numberId)) {
+    return res.status(400).json({ error: "Invalid WhatsApp number ID." });
   }
   if (req.user.role === "user" && !req.user.canEditWorkflows) {
     return res.status(403).json({ error: "You do not have permission to edit workflows." });
   }
+  const startMode = normalizeWorkflowStartMode(requestedStartMode);
+  const normalizedKeyword = normalizeWorkflowTriggerKeyword(triggerKeyword);
+  const validationError = validateWorkflowStartConfiguration({
+    name,
+    welcomeMessage,
+    steps,
+    triggerKeyword: normalizedKeyword,
+    startMode
+  });
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+  const isDefault = startMode === "default";
+  const restartClosed = isDefault && Boolean(restartOnClosedMessage);
   try {
-    const [newWorkflow] = await db.insert(schema_exports.workflows).values({
-      whatsappNumberId: parseInt(id),
-      name,
-      triggerKeyword: triggerKeyword.toLowerCase().trim(),
-      welcomeMessage,
-      isActive: isActive !== void 0 ? isActive : true,
-      steps: typeof steps === "string" ? steps : JSON.stringify(steps)
-    }).returning();
-    await auditLog(req.user.id, req.user.email, "Workflow Created", `Created workflow '${name}' on number ${id}.`);
-    res.json(newWorkflow);
+    const newWorkflow = await db.transaction(async (tx) => {
+      if (isDefault) {
+        await tx.update(schema_exports.workflows).set({
+          isDefault: false,
+          startMode: "keyword",
+          restartOnClosedMessage: false
+        }).where((0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numberId));
+      }
+      const [created] = await tx.insert(schema_exports.workflows).values({
+        whatsappNumberId: numberId,
+        name: String(name).trim(),
+        triggerKeyword: normalizedKeyword,
+        startMode,
+        isDefault,
+        restartOnClosedMessage: restartClosed,
+        welcomeMessage: String(welcomeMessage).trim(),
+        isActive: isActive !== void 0 ? Boolean(isActive) : true,
+        steps: typeof steps === "string" ? steps : JSON.stringify(steps)
+      }).returning();
+      return created;
+    });
+    await auditLog(
+      req.user.id,
+      req.user.email,
+      "Workflow Created",
+      `Created workflow '${newWorkflow.name}' on number ${numberId} with start mode '${startMode}'.`,
+      void 0,
+      {
+        req,
+        resourceType: "workflow",
+        resourceId: newWorkflow.id,
+        metadata: {
+          startMode,
+          isDefault,
+          restartOnClosedMessage: restartClosed
+        }
+      }
+    );
+    return res.json(newWorkflow);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 app.put("/api/whatsapp_numbers/:id/workflows/:workflowId", authenticateJWT, async (req, res) => {
-  const { id, workflowId } = req.params;
-  const { name, triggerKeyword, welcomeMessage, isActive, steps } = req.body;
+  const numberId = Number(req.params.id);
+  const workflowId = Number(req.params.workflowId);
+  if (!Number.isInteger(numberId) || !Number.isInteger(workflowId)) {
+    return res.status(400).json({ error: "Invalid WhatsApp number or workflow ID." });
+  }
   if (req.user.role === "user" && !req.user.canEditWorkflows) {
     return res.status(403).json({ error: "You do not have permission to edit workflows." });
   }
   try {
-    const updates = {};
-    if (name !== void 0) updates.name = name;
-    if (triggerKeyword !== void 0) updates.triggerKeyword = triggerKeyword.toLowerCase().trim();
-    if (welcomeMessage !== void 0) updates.welcomeMessage = welcomeMessage;
-    if (isActive !== void 0) updates.isActive = isActive;
-    if (steps !== void 0) {
-      updates.steps = typeof steps === "string" ? steps : JSON.stringify(steps);
+    const [existing] = await db.select().from(schema_exports.workflows).where((0, import_drizzle_orm2.and)(
+      (0, import_drizzle_orm2.eq)(schema_exports.workflows.id, workflowId),
+      (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numberId)
+    )).limit(1);
+    if (!existing) return res.status(404).json({ error: "Workflow not found." });
+    const mergedName = req.body.name !== void 0 ? req.body.name : existing.name;
+    const mergedWelcome = req.body.welcomeMessage !== void 0 ? req.body.welcomeMessage : existing.welcomeMessage;
+    const mergedSteps = req.body.steps !== void 0 ? req.body.steps : existing.steps;
+    const startMode = req.body.startMode !== void 0 ? normalizeWorkflowStartMode(req.body.startMode) : normalizeWorkflowStartMode(existing.startMode);
+    const normalizedKeyword = req.body.triggerKeyword !== void 0 ? normalizeWorkflowTriggerKeyword(req.body.triggerKeyword) : normalizeWorkflowTriggerKeyword(existing.triggerKeyword);
+    const validationError = validateWorkflowStartConfiguration({
+      name: mergedName,
+      welcomeMessage: mergedWelcome,
+      steps: mergedSteps,
+      triggerKeyword: normalizedKeyword,
+      startMode
+    });
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
-    const [updated] = await db.update(schema_exports.workflows).set(updates).where((0, import_drizzle_orm2.and)(
-      (0, import_drizzle_orm2.eq)(schema_exports.workflows.id, parseInt(workflowId)),
-      (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, parseInt(id))
-    )).returning();
-    if (!updated) return res.status(404).json({ error: "Workflow not found." });
-    await auditLog(req.user.id, req.user.email, "Workflow Updated", `Updated workflow '${updated.name}' (ID: ${workflowId}).`);
-    res.json(updated);
+    const isDefault = startMode === "default";
+    const restartClosed = isDefault && Boolean(
+      req.body.restartOnClosedMessage !== void 0 ? req.body.restartOnClosedMessage : existing.restartOnClosedMessage
+    );
+    const updated = await db.transaction(async (tx) => {
+      if (isDefault) {
+        await tx.update(schema_exports.workflows).set({
+          isDefault: false,
+          startMode: "keyword",
+          restartOnClosedMessage: false
+        }).where((0, import_drizzle_orm2.and)(
+          (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numberId),
+          import_drizzle_orm2.sql`${schema_exports.workflows.id} <> ${workflowId}`
+        ));
+      }
+      const updates = {
+        name: String(mergedName).trim(),
+        triggerKeyword: normalizedKeyword,
+        startMode,
+        isDefault,
+        restartOnClosedMessage: restartClosed,
+        welcomeMessage: String(mergedWelcome).trim()
+      };
+      if (req.body.isActive !== void 0) updates.isActive = Boolean(req.body.isActive);
+      if (req.body.steps !== void 0) {
+        updates.steps = typeof req.body.steps === "string" ? req.body.steps : JSON.stringify(req.body.steps);
+      }
+      const [saved] = await tx.update(schema_exports.workflows).set(updates).where((0, import_drizzle_orm2.and)(
+        (0, import_drizzle_orm2.eq)(schema_exports.workflows.id, workflowId),
+        (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numberId)
+      )).returning();
+      return saved;
+    });
+    await auditLog(
+      req.user.id,
+      req.user.email,
+      "Workflow Updated",
+      `Updated workflow '${updated.name}' (ID: ${workflowId}) with start mode '${startMode}'.`,
+      void 0,
+      {
+        req,
+        resourceType: "workflow",
+        resourceId: workflowId,
+        metadata: {
+          startMode,
+          isDefault,
+          restartOnClosedMessage: restartClosed
+        }
+      }
+    );
+    return res.json(updated);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 app.delete("/api/whatsapp_numbers/:id/workflows/:workflowId", authenticateJWT, async (req, res) => {
@@ -4352,7 +4516,7 @@ app.post("/api/ai-suggestions/train", authenticateJWT, async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 });
-async function runWorkflowStep(convId, numId, incomingText, contactId) {
+async function runWorkflowStep(convId, numId, incomingText, contactId, defaultStartReason = null) {
   try {
     let [session] = await db.select().from(schema_exports.workflowSessions).where((0, import_drizzle_orm2.and)(
       (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.conversationId, convId),
@@ -4360,11 +4524,31 @@ async function runWorkflowStep(convId, numId, incomingText, contactId) {
     )).limit(1);
     const textLower = incomingText.toLowerCase().trim();
     if (!session) {
-      const [wf2] = await db.select().from(schema_exports.workflows).where((0, import_drizzle_orm2.and)(
-        (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numId),
-        (0, import_drizzle_orm2.eq)(schema_exports.workflows.isActive, true),
-        (0, import_drizzle_orm2.eq)(schema_exports.workflows.triggerKeyword, textLower)
-      )).limit(1);
+      let wf2;
+      let workflowStartSource = "keyword";
+      if (defaultStartReason) {
+        const defaultConditions = [
+          (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numId),
+          (0, import_drizzle_orm2.eq)(schema_exports.workflows.isActive, true),
+          (0, import_drizzle_orm2.eq)(schema_exports.workflows.isDefault, true),
+          (0, import_drizzle_orm2.eq)(schema_exports.workflows.startMode, "default")
+        ];
+        if (defaultStartReason === "reopened") {
+          defaultConditions.push((0, import_drizzle_orm2.eq)(schema_exports.workflows.restartOnClosedMessage, true));
+        }
+        [wf2] = await db.select().from(schema_exports.workflows).where((0, import_drizzle_orm2.and)(...defaultConditions)).orderBy((0, import_drizzle_orm2.asc)(schema_exports.workflows.id)).limit(1);
+        if (wf2) {
+          workflowStartSource = defaultStartReason === "reopened" ? "default_reopened" : "default_first_message";
+        }
+      }
+      if (!wf2 && textLower) {
+        [wf2] = await db.select().from(schema_exports.workflows).where((0, import_drizzle_orm2.and)(
+          (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numId),
+          (0, import_drizzle_orm2.eq)(schema_exports.workflows.isActive, true),
+          (0, import_drizzle_orm2.eq)(schema_exports.workflows.triggerKeyword, textLower)
+        )).orderBy((0, import_drizzle_orm2.asc)(schema_exports.workflows.id)).limit(1);
+        if (wf2) workflowStartSource = "keyword";
+      }
       if (!wf2) {
         return false;
       }
@@ -4394,6 +4578,24 @@ ${welcomeStep.questionText}`
         throw deliveryError;
       }
       await db.update(schema_exports.conversations).set({ status: "workflow_active", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
+      await auditLog(
+        null,
+        null,
+        workflowStartSource === "keyword" ? "Workflow Started" : "Default Workflow Started",
+        `Workflow ${wf2.id} started for conversation ${convId} via ${workflowStartSource}.`,
+        void 0,
+        {
+          category: "automation",
+          severity: "success",
+          resourceType: "workflow",
+          resourceId: wf2.id,
+          metadata: {
+            conversationId: convId,
+            whatsappNumberId: numId,
+            startSource: workflowStartSource
+          }
+        }
+      );
       return true;
     }
     if (textLower === "human" || textLower === "help" || textLower === "recruiter") {
@@ -4842,7 +5044,8 @@ async function processInboundAutomation(params) {
       params.conversationId,
       params.whatsappNumberId,
       params.incomingText,
-      params.contactId
+      params.contactId,
+      params.defaultWorkflowStartReason || null
     );
     if (workflowHandled) return;
     if (textualInbound && isDirectHumanHandoverRequest(params.incomingText)) {
@@ -5093,6 +5296,14 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
       (0, import_drizzle_orm2.eq)(schema_exports.conversations.contactId, contact.id),
       (0, import_drizzle_orm2.eq)(schema_exports.conversations.whatsappNumberId, numId)
     )).limit(1);
+    const isNewConversation = !conv;
+    const wasClosedConversation = conv?.status === "closed";
+    if (conv && wasClosedConversation) {
+      await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: receivedAt }).where((0, import_drizzle_orm2.and)(
+        (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.conversationId, conv.id),
+        (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.isActive, true)
+      ));
+    }
     if (!conv) {
       [conv] = await db.insert(schema_exports.conversations).values({
         contactId: contact.id,
@@ -5168,7 +5379,8 @@ app.post("/webhooks/whatsapp/:numberId", async (req, res) => {
           contactId: contact.id,
           incomingText: text2,
           messageType,
-          inboundMetaMessageId: incomingMetaMessageId || null
+          inboundMetaMessageId: incomingMetaMessageId || null,
+          defaultWorkflowStartReason: isNewConversation ? "first_message" : wasClosedConversation ? "reopened" : null
         });
         await db.update(schema_exports.conversations).set({ isUnread: true, lastMessageAt: receivedAt }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, conv.id));
       })().catch((automationError) => {
