@@ -1,0 +1,127 @@
+{
+  "name": "InTalent WhatsApp Main Menu",
+  "triggerKeyword": "menu",
+  "startMode": "default",
+  "isDefault": true,
+  "restartOnClosedMessage": true,
+  "fallbackOnUnmatchedMessage": true,
+  "welcomeMessage": "Hi! Welcome to InTalent Asia 👋\n\nThank you for contacting us.",
+  "isActive": true,
+  "steps": [
+    {
+      "id": "main_menu",
+      "type": "menu",
+      "questionText": "Please select an option by replying with the relevant number:\n\n1. I am looking for a job\n2. I want to hire employees\n3. View current vacancies\n4. Speak to a recruiter",
+      "options": [
+        { "key": "1", "text": "I am looking for a job", "nextStepId": "candidate_menu" },
+        { "key": "2", "text": "I want to hire employees", "nextStepId": "employer_menu" },
+        { "key": "3", "text": "View current vacancies", "nextStepId": "vacancies_menu" },
+        { "key": "4", "text": "Speak to a recruiter", "nextStepId": "recruiter_handover" }
+      ]
+    },
+    {
+      "id": "candidate_menu",
+      "type": "menu",
+      "questionText": "Candidate Services\n\nPlease select an option:\n\n1. Register as a candidate\n2. Submit or update my CV\n3. View current vacancies\n4. Speak to a recruiter\n0. Back to the main menu",
+      "options": [
+        { "key": "1", "text": "Register as a candidate", "nextStepId": "candidate_name" },
+        { "key": "2", "text": "Submit or update my CV", "nextStepId": "candidate_cv" },
+        { "key": "3", "text": "View current vacancies", "nextStepId": "vacancies_menu" },
+        { "key": "4", "text": "Speak to a recruiter", "nextStepId": "recruiter_handover" },
+        { "key": "0", "text": "Back to the main menu", "nextStepId": "main_menu" }
+      ]
+    },
+    {
+      "id": "candidate_name",
+      "type": "question",
+      "questionText": "Please enter your full name as shown on your CV.",
+      "variableName": "name",
+      "nextStepId": "candidate_location"
+    },
+    {
+      "id": "candidate_location",
+      "type": "question",
+      "questionText": "Please enter your current city and country.\n\nExample: Colombo, Sri Lanka",
+      "variableName": "location",
+      "nextStepId": "candidate_role"
+    },
+    {
+      "id": "candidate_role",
+      "type": "question",
+      "questionText": "What job role or designation are you currently interested in?\n\nExample: Finance Executive, Software Engineer, Sales Manager",
+      "variableName": "interestedJobRole",
+      "nextStepId": "candidate_experience"
+    },
+    {
+      "id": "candidate_experience",
+      "type": "question",
+      "questionText": "How many years of relevant work experience do you have?\n\nExample: 3 years",
+      "variableName": "experience",
+      "nextStepId": "candidate_cv"
+    },
+    {
+      "id": "candidate_cv",
+      "type": "question",
+      "questionText": "Please send your CV as a document or paste your LinkedIn profile link.\n\nYou can also email your CV to cv@intalent.asia and mention the relevant job title in the email subject line.",
+      "variableName": "cvField",
+      "nextStepId": "candidate_complete"
+    },
+    {
+      "id": "candidate_complete",
+      "type": "end_workflow",
+      "questionText": "Thank you for registering with InTalent Asia. ✅\n\nYour information has been received successfully. Our recruitment team will review your profile and contact you when a suitable opportunity is available.\n\nPlease note that only shortlisted candidates will be contacted.\n\nCurrent vacancies:\nhttps://intalent.asia/current-vacancies/\n\nType ‘menu’ whenever you need to return to the main menu."
+    },
+    {
+      "id": "employer_menu",
+      "type": "menu",
+      "questionText": "Employer Services\n\nPlease select an option:\n\n1. Request recruitment support\n2. Share a job requirement\n3. Speak to a recruitment consultant\n0. Back to the main menu",
+      "options": [
+        { "key": "1", "text": "Request recruitment support", "nextStepId": "employer_company" },
+        { "key": "2", "text": "Share a job requirement", "nextStepId": "employer_company" },
+        { "key": "3", "text": "Speak to a recruitment consultant", "nextStepId": "employer_handover" },
+        { "key": "0", "text": "Back to the main menu", "nextStepId": "main_menu" }
+      ]
+    },
+    {
+      "id": "employer_company",
+      "type": "question",
+      "questionText": "Please enter your company name.",
+      "variableName": "companyName",
+      "nextStepId": "employer_contact"
+    },
+    {
+      "id": "employer_contact",
+      "type": "question",
+      "questionText": "Please enter your name and designation.\n\nExample: Kasun Perera – HR Manager",
+      "variableName": "contactDesignation",
+      "nextStepId": "employer_requirement"
+    },
+    {
+      "id": "employer_requirement",
+      "type": "question",
+      "questionText": "Please briefly describe your hiring requirement.\n\nYou may include the job title, number of vacancies, preferred location, required experience and expected hiring timeline.",
+      "variableName": "hiringRequirements",
+      "nextStepId": "employer_handover"
+    },
+    {
+      "id": "employer_handover",
+      "type": "handover",
+      "questionText": "Thank you. Your hiring requirement has been received successfully.\n\nA member of the InTalent Asia team will review your requirement and contact you as soon as possible."
+    },
+    {
+      "id": "vacancies_menu",
+      "type": "menu",
+      "questionText": "You can view and apply for current vacancies through:\n\nhttps://intalent.asia/current-vacancies/\n\nPlease select an option:\n\n1. Register as a candidate\n2. Speak to a recruiter\n0. Back to the main menu",
+      "options": [
+        { "key": "1", "text": "Register as a candidate", "nextStepId": "candidate_name" },
+        { "key": "2", "text": "Speak to a recruiter", "nextStepId": "recruiter_handover" },
+        { "key": "0", "text": "Back to the main menu", "nextStepId": "main_menu" }
+      ]
+    },
+    {
+      "id": "recruiter_handover",
+      "type": "handover",
+      "questionText": "Thank you. Your conversation has been transferred to an InTalent Asia recruiter.\n\nA member of our recruitment team will assist you as soon as possible."
+    }
+  ]
+}

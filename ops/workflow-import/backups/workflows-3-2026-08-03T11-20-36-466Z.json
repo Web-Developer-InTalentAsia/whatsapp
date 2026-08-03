@@ -1,0 +1,67 @@
+{
+  "createdAt": "2026-08-03T11:20:36.467Z",
+  "whatsappNumber": {
+    "id": 3,
+    "display_name": "Intalent asia",
+    "phone_number": "+94707797478",
+    "is_active": true
+  },
+  "workflows": [
+    {
+      "id": 2,
+      "whatsapp_number_id": 3,
+      "name": "Candidate Registration & Job Application",
+      "trigger_keyword": "apply",
+      "welcome_message": "Hi! Welcome to InTalent Asia Careers. 👋\n\nTo help us understand your requirement, please complete this short registration process.\n\nYou can type “recruiter” at any time to speak with a member of our team.",
+      "is_active": true,
+      "steps": "[{\"id\":\"step_1785219392276\",\"type\":\"menu\",\"questionText\":\"Register as a candidate?\",\"variableName\":\"notes\"},{\"id\":\"step_1785219428273\",\"type\":\"menu\",\"questionText\":\" View current vacancies?\",\"variableName\":\"notes\"},{\"id\":\"step_1785219850724\",\"type\":\"menu\",\"questionText\":\"Speak to a recruiter?\",\"variableName\":\"notes\"},{\"id\":\"step_1785219876597\",\"type\":\"menu\",\"questionText\":\" Update my candidate details?\",\"variableName\":\"notes\"},{\"id\":\"step_1785219958203\",\"type\":\"question\",\"questionText\":\"Please enter your full name as shown on your CV. .\",\"variableName\":\"name\"},{\"id\":\"step_1785219987539\",\"type\":\"question\",\"questionText\":\"Please enter your current city and country.\\n\\nExample: Colombo, Sri Lanka\",\"variableName\":\"location\"},{\"id\":\"step_1785220014313\",\"type\":\"question\",\"questionText\":\"What job role or designation are you currently interested in?\\n\\nExample: Software Engineer, Finance Executive, Sales Manager\",\"variableName\":\"interestedJobRole\"}]",
+      "created_at": "2026-07-27T17:47:32.754Z",
+      "start_mode": "keyword",
+      "is_default": false,
+      "restart_on_closed_message": false,
+      "fallback_on_unmatched_message": false
+    },
+    {
+      "id": 3,
+      "whatsapp_number_id": 3,
+      "name": "Candidate Registration & Job Application",
+      "trigger_keyword": "apply",
+      "welcome_message": "Hi! Welcome to InTalent Asia Careers. 👋\n\nTo help us understand your requirement, please complete this short registration process.\n\nYou can type “recruiter” at any time to speak with a member of our team.",
+      "is_active": true,
+      "steps": "[{\"id\":\"step_1785219392276\",\"type\":\"menu\",\"questionText\":\"Register as a candidate?\",\"variableName\":\"notes\"},{\"id\":\"step_1785219428273\",\"type\":\"menu\",\"questionText\":\" View current vacancies?\",\"variableName\":\"notes\"},{\"id\":\"step_1785219916923\",\"type\":\"question\",\"questionText\":\"Please enter your full name as shown on your CV.\",\"variableName\":\"name\"}]",
+      "created_at": "2026-07-27T17:47:32.943Z",
+      "start_mode": "keyword",
+      "is_default": false,
+      "restart_on_closed_message": false,
+      "fallback_on_unmatched_message": false
+    },
+    {
+      "id": 4,
+      "whatsapp_number_id": 3,
+      "name": "test",
+      "trigger_keyword": "menu",
+      "welcome_message": "Welcome!",
+      "is_active": true,
+      "steps": "[{\"id\":\"step_1785748428671\",\"type\":\"menu\",\"questionText\":\"Hi! Welcome to InTalent Asia 👋\\n\\nPlease select an option by replying with the relevant number:\\n\\n1. I am looking for a job\\n2. I want to hire employees\\n3. View current vacancies\\n4. Speak to a recruiter\",\"variableName\":\"cvField\"}]",
+      "created_at": "2026-08-02T20:18:22.702Z",
+      "start_mode": "keyword",
+      "is_default": false,
+      "restart_on_closed_message": false,
+      "fallback_on_unmatched_message": false
+    },
+    {
+      "id": 5,
+      "whatsapp_number_id": 3,
+      "name": "auto relply",
+      "trigger_keyword": "menu",
+      "welcome_message": "Welcome!",
+      "is_active": true,
+      "steps": "[{\"id\":\"step_1785750396337\",\"type\":\"menu\",\"questionText\":\"Hi! Welcome to InTalent Asia 👋\\n\\nPlease select an option by replying with the relevant number:\\n\\n1. I am looking for a job\\n2. I want to hire employees\\n3. View current vacancies\\n4. Speak to a recruiter\",\"variableName\":\"notes\"},{\"id\":\"step_1785751518773\",\"type\":\"menu\",\"questionText\":\" I am looking for a job\",\"variableName\":\"notes\"}]",
+      "created_at": "2026-08-02T21:16:44.526Z",
+      "start_mode": "default",
+      "is_default": true,
+      "restart_on_closed_message": true,
+      "fallback_on_unmatched_message": true
+    }
+  ]
+}

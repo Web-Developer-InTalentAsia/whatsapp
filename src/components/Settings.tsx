@@ -34,6 +34,85 @@ const createEmptyWorkflowForm = (): WorkflowFormState => ({
   steps: [],
 });
 
+const normalizeWorkflowOptionKey = (value: unknown) => String(value || "").trim().toLowerCase();
+
+const getWorkflowStepLabel = (steps: WorkflowStep[], stepId?: string) => {
+  if (!stepId) return "End workflow after this step";
+  const index = steps.findIndex((step) => step.id === stepId);
+  if (index < 0) return `Missing step (${stepId})`;
+  const step = steps[index];
+  const summary = String(step.questionText || "Untitled step").replace(/\s+/g, " ").trim();
+  return `#${index + 1} [${step.type}] ${summary.slice(0, 58)}`;
+};
+
+const validateWorkflowStepTree = (steps: WorkflowStep[]) => {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (steps.length === 0) {
+    errors.push("Add at least one workflow step.");
+    return { errors, warnings };
+  }
+
+  const stepIds = new Set<string>();
+  for (const [index, step] of steps.entries()) {
+    const stepNumber = index + 1;
+    const stepId = String(step.id || "").trim();
+    const questionText = String(step.questionText || "").trim();
+
+    if (!stepId) errors.push(`Step #${stepNumber} does not have an ID.`);
+    if (stepIds.has(stepId)) errors.push(`Step #${stepNumber} uses a duplicate step ID.`);
+    stepIds.add(stepId);
+    if (!questionText) errors.push(`Step #${stepNumber} requires message text.`);
+
+    if (step.type === "menu") {
+      const options = Array.isArray(step.options) ? step.options : [];
+      if (options.length === 0) {
+        errors.push(`Step #${stepNumber} is a menu but has no options.`);
+      }
+      const optionKeys = new Set<string>();
+      options.forEach((option, optionIndex) => {
+        const optionName = `Step #${stepNumber}, option #${optionIndex + 1}`;
+        const key = normalizeWorkflowOptionKey(option.key);
+        if (!key) errors.push(`${optionName} requires an option key such as 1 or 0.`);
+        if (key && optionKeys.has(key)) errors.push(`${optionName} duplicates option key “${option.key}”.`);
+        optionKeys.add(key);
+        if (!String(option.text || "").trim()) errors.push(`${optionName} requires a label.`);
+        if (!String(option.nextStepId || "").trim()) errors.push(`${optionName} requires a next step.`);
+      });
+    }
+  }
+
+  for (const [index, step] of steps.entries()) {
+    const stepNumber = index + 1;
+    if (step.nextStepId && !stepIds.has(step.nextStepId)) {
+      errors.push(`Step #${stepNumber} points to a missing next step.`);
+    }
+    if (step.type === "menu") {
+      (step.options || []).forEach((option) => {
+        if (option.nextStepId && !stepIds.has(option.nextStepId)) {
+          errors.push(`Step #${stepNumber}, option “${option.key}” points to a missing step.`);
+        }
+      });
+    }
+  }
+
+  const incomingReferences = new Set<string>();
+  steps.forEach((step) => {
+    if (step.nextStepId) incomingReferences.add(step.nextStepId);
+    (step.options || []).forEach((option) => {
+      if (option.nextStepId) incomingReferences.add(option.nextStepId);
+    });
+  });
+  steps.slice(1).forEach((step, index) => {
+    if (!incomingReferences.has(step.id)) {
+      warnings.push(`Step #${index + 2} is not linked from another step.`);
+    }
+  });
+
+  return { errors, warnings };
+};
+
 export default function Settings({ token, currentUser }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<"numbers" | "ai" | "workflows" | "users" | "quick_replies">("numbers");
   
@@ -72,6 +151,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
   const [wfForm, setWfForm] = useState<WorkflowFormState>(createEmptyWorkflowForm());
   const [activeStepEdit, setActiveStepEdit] = useState<WorkflowStep | null>(null);
+  const [showWorkflowPreview, setShowWorkflowPreview] = useState(false);
 
   // 4. User Management State (Super Admin Only)
   const [newUserForm, setNewUserForm] = useState({ name: "", email: "", password: "", role: "user" as any, isActive: true, canEditWorkflows: false });
@@ -450,6 +530,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
       steps: JSON.parse(wf.steps)
     });
     setActiveStepEdit(null);
+    setShowWorkflowPreview(false);
   };
 
   const handleSaveWorkflow = async () => {
@@ -461,9 +542,16 @@ export default function Settings({ token, currentUser }: SettingsProps) {
       alert("A trigger keyword is required for an exact-keyword workflow.");
       return;
     }
-    if (wfForm.steps.length === 0) {
-      alert("Add at least one workflow step before saving.");
+    const workflowValidation = validateWorkflowStepTree(wfForm.steps);
+    if (workflowValidation.errors.length > 0) {
+      alert(`Please fix the workflow routing before saving:\n\n${workflowValidation.errors.join("\n")}`);
       return;
+    }
+    if (workflowValidation.warnings.length > 0) {
+      const proceed = confirm(
+        `Workflow routing warnings:\n\n${workflowValidation.warnings.join("\n")}\n\nSave anyway?`,
+      );
+      if (!proceed) return;
     }
     try {
       const isNew = !selectedWorkflow;
@@ -481,6 +569,7 @@ export default function Settings({ token, currentUser }: SettingsProps) {
         body: JSON.stringify(wfForm)
       });
 
+      const responseData = await res.json().catch(() => ({}));
       if (res.ok) {
         alert("Workflow saved successfully!");
         // Refresh workflows list
@@ -494,8 +583,13 @@ export default function Settings({ token, currentUser }: SettingsProps) {
             handleSelectWorkflow(listData[0]);
           }
         }
+      } else {
+        alert(responseData.error || "Could not save workflow.");
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+      alert("Could not reach the server while saving the workflow.");
+    }
   };
 
   const handleAddStepToWf = () => {
@@ -512,19 +606,134 @@ export default function Settings({ token, currentUser }: SettingsProps) {
     setActiveStepEdit(newStep);
   };
 
+  const handleStepTypeChange = (nextType: WorkflowStep["type"]) => {
+    setActiveStepEdit((current) => {
+      if (!current) return current;
+      if (nextType === "menu") {
+        return {
+          ...current,
+          type: nextType,
+          variableName: undefined,
+          nextStepId: undefined,
+          options: current.options?.length
+            ? current.options
+            : [{ key: "1", text: "", nextStepId: "" }],
+        };
+      }
+      if (nextType === "question" || nextType === "capture_text") {
+        return { ...current, type: nextType, options: undefined };
+      }
+      return {
+        ...current,
+        type: nextType,
+        variableName: undefined,
+        options: undefined,
+        nextStepId: undefined,
+      };
+    });
+  };
+
+  const handleAddMenuOption = () => {
+    setActiveStepEdit((current) => {
+      if (!current) return current;
+      const existingOptions = current.options || [];
+      let proposedKey = String(existingOptions.length + 1);
+      const usedKeys = new Set(existingOptions.map((option) => normalizeWorkflowOptionKey(option.key)));
+      while (usedKeys.has(normalizeWorkflowOptionKey(proposedKey))) {
+        proposedKey = String(Number(proposedKey) + 1);
+      }
+      return {
+        ...current,
+        options: [...existingOptions, { key: proposedKey, text: "", nextStepId: "" }],
+      };
+    });
+  };
+
+  const handleUpdateMenuOption = (optionIndex: number, updates: Partial<NonNullable<WorkflowStep["options"]>[number]>) => {
+    setActiveStepEdit((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        options: (current.options || []).map((option, index) =>
+          index === optionIndex ? { ...option, ...updates } : option,
+        ),
+      };
+    });
+  };
+
+  const handleRemoveMenuOption = (optionIndex: number) => {
+    setActiveStepEdit((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        options: (current.options || []).filter((_, index) => index !== optionIndex),
+      };
+    });
+  };
+
   const handleSaveStepInWf = (updatedStep: WorkflowStep) => {
-    setWfForm(prev => ({
-      ...prev,
-      steps: prev.steps.map(s => s.id === updatedStep.id ? updatedStep : s)
+    const normalizedStep: WorkflowStep = {
+      ...updatedStep,
+      questionText: String(updatedStep.questionText || "").trim(),
+      nextStepId: updatedStep.nextStepId || undefined,
+      options: updatedStep.type === "menu"
+        ? (updatedStep.options || []).map((option) => ({
+            key: String(option.key || "").trim(),
+            text: String(option.text || "").trim(),
+            nextStepId: String(option.nextStepId || "").trim(),
+          }))
+        : undefined,
+      variableName: updatedStep.type === "question" || updatedStep.type === "capture_text"
+        ? updatedStep.variableName
+        : undefined,
+    };
+
+    if (!normalizedStep.questionText) {
+      alert("Enter the WhatsApp message text for this step.");
+      return;
+    }
+
+    const candidateSteps = wfForm.steps.map((step) =>
+      step.id === normalizedStep.id ? normalizedStep : step,
+    );
+    const validation = validateWorkflowStepTree(candidateSteps);
+    const stepPosition = candidateSteps.findIndex((step) => step.id === normalizedStep.id) + 1;
+    const stepSpecificErrors = validation.errors.filter((error) =>
+      error.startsWith(`Step #${stepPosition}`),
+    );
+    if (stepSpecificErrors.length > 0) {
+      alert(stepSpecificErrors.join("\n"));
+      return;
+    }
+
+    setWfForm((previous) => ({
+      ...previous,
+      steps: candidateSteps,
     }));
     setActiveStepEdit(null);
-    alert("Step updated in local builder. Remember to click Save Workflow below!");
+    alert("Step routing updated locally. Click Save Workflow Tree to publish it.");
   };
 
   const handleDeleteStepFromWf = (stepId: string) => {
-    setWfForm(prev => ({
-      ...prev,
-      steps: prev.steps.filter(s => s.id !== stepId)
+    const references = wfForm.steps.flatMap((step, stepIndex) => {
+      const results: string[] = [];
+      if (step.nextStepId === stepId) results.push(`Step #${stepIndex + 1}`);
+      (step.options || []).forEach((option) => {
+        if (option.nextStepId === stepId) {
+          results.push(`Step #${stepIndex + 1}, option ${option.key}`);
+        }
+      });
+      return results;
+    });
+
+    if (references.length > 0) {
+      alert(`This step is still linked from:\n${references.join("\n")}\n\nChange those routes before deleting it.`);
+      return;
+    }
+
+    setWfForm((previous) => ({
+      ...previous,
+      steps: previous.steps.filter((step) => step.id !== stepId),
     }));
     if (activeStepEdit?.id === stepId) setActiveStepEdit(null);
   };
@@ -1327,35 +1536,82 @@ export default function Settings({ token, currentUser }: SettingsProps) {
 
                   {/* Steps Tree list */}
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Numbered Step Tree</span>
-                      <button
-                        onClick={handleAddStepToWf}
-                        className="text-xs text-emerald-400 hover:text-emerald-350 flex items-center gap-1 font-semibold cursor-pointer"
-                      >
-                        <Plus className="h-3.5 w-3.5" /> Add Step
-                      </button>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setShowWorkflowPreview((visible) => !visible)}
+                          className="text-xs text-sky-400 hover:text-sky-300 flex items-center gap-1 font-semibold cursor-pointer"
+                        >
+                          <Eye className="h-3.5 w-3.5" /> {showWorkflowPreview ? "Hide Preview" : "Preview Routes"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleAddStepToWf}
+                          className="text-xs text-emerald-400 hover:text-emerald-350 flex items-center gap-1 font-semibold cursor-pointer"
+                        >
+                          <Plus className="h-3.5 w-3.5" /> Add Step
+                        </button>
+                      </div>
                     </div>
 
                     <div className="space-y-2">
                       {wfForm.steps.map((step, idx) => (
                         <div
                           key={step.id}
-                          className="bg-[#09090b] border border-zinc-800 p-3 rounded-xl flex items-center justify-between text-xs hover:border-zinc-700 transition"
+                          className="bg-[#09090b] border border-zinc-800 p-3 rounded-xl flex items-start justify-between gap-3 text-xs hover:border-zinc-700 transition"
                         >
-                          <div>
-                            <span className="font-bold text-emerald-400 mr-2">#{idx+1}</span>
-                            <span className="font-semibold text-zinc-300 capitalize">[{step.type}]</span>
-                            <p className="text-zinc-500 mt-0.5 max-w-sm truncate">{step.questionText}</p>
+                          <div className="min-w-0 flex-1">
+                            <div>
+                              <span className="font-bold text-emerald-400 mr-2">#{idx + 1}</span>
+                              <span className="font-semibold text-zinc-300 capitalize">[{step.type}]</span>
+                              {idx === 0 && (
+                                <span className="ml-2 rounded-full border border-emerald-900/60 bg-emerald-950/35 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400">
+                                  Main Menu / First Step
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-zinc-500 mt-1 max-w-xl truncate">{step.questionText}</p>
+
+                            {step.type === "menu" && (
+                              <div className="mt-2 space-y-1">
+                                {(step.options || []).length === 0 ? (
+                                  <p className="text-[10px] text-amber-400">No menu options configured.</p>
+                                ) : (
+                                  (step.options || []).map((option, optionIndex) => (
+                                    <div key={`${step.id}_${optionIndex}`} className="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-500">
+                                      <span className="rounded bg-zinc-900 border border-zinc-800 px-1.5 py-0.5 font-mono text-zinc-300">{option.key || "?"}</span>
+                                      <span>{option.text || "Untitled option"}</span>
+                                      <span className="text-zinc-700">→</span>
+                                      <span className={wfForm.steps.some((candidate) => candidate.id === option.nextStepId) ? "text-sky-400" : "text-rose-400"}>
+                                        {getWorkflowStepLabel(wfForm.steps, option.nextStepId)}
+                                      </span>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            )}
+
+                            {(step.type === "question" || step.type === "capture_text") && (
+                              <p className="mt-2 text-[10px] text-zinc-500">
+                                Next: <span className="text-sky-400">{getWorkflowStepLabel(wfForm.steps, step.nextStepId)}</span>
+                              </p>
+                            )}
                           </div>
                           <div className="flex gap-2 shrink-0">
                             <button
-                              onClick={() => setActiveStepEdit(step)}
+                              type="button"
+                              onClick={() => setActiveStepEdit({
+                                ...step,
+                                options: step.options?.map((option) => ({ ...option })),
+                              })}
                               className="text-xs text-emerald-400 hover:text-emerald-350 font-semibold cursor-pointer"
                             >
                               Edit Step
                             </button>
                             <button
+                              type="button"
                               onClick={() => handleDeleteStepFromWf(step.id)}
                               className="text-xs text-rose-400 hover:text-rose-350 font-semibold cursor-pointer"
                             >
@@ -1366,65 +1622,240 @@ export default function Settings({ token, currentUser }: SettingsProps) {
                       ))}
                     </div>
 
+                    {showWorkflowPreview && (
+                      <div className="rounded-xl border border-sky-900/50 bg-sky-950/15 p-4 space-y-3">
+                        <div className="flex items-center gap-2 text-xs font-bold text-sky-300">
+                          <GitMerge className="h-4 w-4" /> Workflow Routing Preview
+                        </div>
+                        {wfForm.steps.length === 0 ? (
+                          <p className="text-xs text-zinc-500">Add workflow steps to preview the flow.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {wfForm.steps.map((step, index) => (
+                              <div key={`preview_${step.id}`} className="rounded-lg border border-zinc-800 bg-[#09090b] p-3 text-[10px]">
+                                <div className="font-bold text-zinc-300">#{index + 1} · {step.type.replace("_", " ")}</div>
+                                <p className="mt-1 whitespace-pre-wrap text-zinc-500">{step.questionText}</p>
+                                {step.type === "menu" && (
+                                  <div className="mt-2 space-y-1 border-l border-zinc-800 pl-3">
+                                    {(step.options || []).map((option, optionIndex) => (
+                                      <p key={`preview_option_${optionIndex}`} className="text-zinc-400">
+                                        <span className="font-mono text-emerald-400">{option.key}</span> · {option.text} → {getWorkflowStepLabel(wfForm.steps, option.nextStepId)}
+                                      </p>
+                                    ))}
+                                  </div>
+                                )}
+                                {(step.type === "question" || step.type === "capture_text") && (
+                                  <p className="mt-2 text-zinc-400">Answer → {getWorkflowStepLabel(wfForm.steps, step.nextStepId)}</p>
+                                )}
+                                {step.type === "handover" && <p className="mt-2 text-amber-400">Conversation → Recruiter Handover</p>}
+                                {step.type === "end_workflow" && <p className="mt-2 text-emerald-400">Workflow ends here</p>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {(() => {
+                          const validation = validateWorkflowStepTree(wfForm.steps);
+                          return (
+                            <div className="space-y-2">
+                              {validation.errors.length === 0 ? (
+                                <div className="rounded-lg border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 text-[10px] text-emerald-300">
+                                  Routing validation passed. All configured links point to valid steps.
+                                </div>
+                              ) : (
+                                <div className="rounded-lg border border-rose-900/50 bg-rose-950/20 px-3 py-2 text-[10px] text-rose-300">
+                                  <p className="font-bold">Fix before saving:</p>
+                                  {validation.errors.map((error, errorIndex) => <p key={errorIndex}>• {error}</p>)}
+                                </div>
+                              )}
+                              {validation.warnings.length > 0 && (
+                                <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-[10px] text-amber-300">
+                                  {validation.warnings.map((warning, warningIndex) => <p key={warningIndex}>• {warning}</p>)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+
                     {/* Step Editor modal block if active */}
                     {activeStepEdit && (
                       <div className="bg-emerald-950/20 border border-emerald-900/40 p-4 rounded-xl text-xs space-y-4">
-                        <h4 className="font-bold text-emerald-400 border-b border-emerald-900/40 pb-1.5 uppercase tracking-wider text-[10px]">
-                          Configure Step Properties
-                        </h4>
-                        
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="flex items-center justify-between border-b border-emerald-900/40 pb-2">
+                          <h4 className="font-bold text-emerald-400 uppercase tracking-wider text-[10px]">
+                            Configure Step Properties
+                          </h4>
+                          <span className="font-mono text-[9px] text-zinc-600">{activeStepEdit.id}</span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
                             <span className="text-zinc-400 block mb-1">Step Answer Type</span>
                             <select
                               value={activeStepEdit.type}
-                              onChange={(e) => setActiveStepEdit({ ...activeStepEdit, type: e.target.value as any })}
+                              onChange={(event) => handleStepTypeChange(event.target.value as WorkflowStep["type"])}
                               className="w-full border border-zinc-800 bg-[#09090b] text-zinc-200 p-2 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
                             >
                               <option value="question">Question (Capture Text)</option>
                               <option value="menu">Option Menu (1, 2, 3 selection)</option>
                               <option value="handover">Transfer to Recruiter</option>
-                              <option value="end_workflow">End Workflow Terminate</option>
+                              <option value="end_workflow">End Workflow</option>
                             </select>
                           </div>
 
-                          <div>
-                            <span className="text-zinc-400 block mb-1">Map variable to Candidate Profile</span>
-                            <select
-                              value={activeStepEdit.variableName || ""}
-                              onChange={(e) => setActiveStepEdit({ ...activeStepEdit, variableName: e.target.value as any })}
-                              className="w-full border border-zinc-800 bg-[#09090b] text-zinc-200 p-2 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
-                            >
-                              <option value="">None (Don't save)</option>
-                              <option value="name">Name</option>
-                              <option value="cvField">CV / LinkedIn Link</option>
-                              <option value="interestedJobRole">Desired Role</option>
-                              <option value="expectedSalary">Expected Salary</option>
-                              <option value="location">Candidate Location</option>
-                              <option value="experience">Years Experience</option>
-                              <option value="clientCandidateType">Client/Candidate Type</option>
-                            </select>
-                          </div>
+                          {(activeStepEdit.type === "question" || activeStepEdit.type === "capture_text") && (
+                            <div>
+                              <span className="text-zinc-400 block mb-1">Map variable to Candidate Profile</span>
+                              <select
+                                value={activeStepEdit.variableName || ""}
+                                onChange={(event) => setActiveStepEdit({ ...activeStepEdit, variableName: event.target.value as any })}
+                                className="w-full border border-zinc-800 bg-[#09090b] text-zinc-200 p-2 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                              >
+                                <option value="">None (Don't save)</option>
+                                <option value="name">Name</option>
+                                <option value="cvField">CV / LinkedIn Link</option>
+                                <option value="interestedJobRole">Desired Role</option>
+                                <option value="expectedSalary">Expected Salary</option>
+                                <option value="location">Candidate Location</option>
+                                <option value="experience">Years Experience</option>
+                                <option value="clientCandidateType">Client/Candidate Type</option>
+                              </select>
+                            </div>
+                          )}
                         </div>
 
                         <div>
-                          <span className="text-zinc-400 block mb-1">Question / Statement Text</span>
+                          <span className="text-zinc-400 block mb-1">WhatsApp Message Text</span>
                           <textarea
-                            rows={2}
+                            rows={4}
                             value={activeStepEdit.questionText}
-                            onChange={(e) => setActiveStepEdit({ ...activeStepEdit, questionText: e.target.value })}
+                            onChange={(event) => setActiveStepEdit({ ...activeStepEdit, questionText: event.target.value })}
                             className="w-full border border-zinc-800 bg-[#09090b] text-zinc-100 p-2 rounded-lg leading-normal focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                            placeholder="Enter the message the customer will receive..."
                           />
                         </div>
 
+                        {activeStepEdit.type === "menu" && (
+                          <div className="space-y-3 rounded-xl border border-zinc-800 bg-[#09090b] p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <p className="font-bold text-zinc-300">Numbered Menu Options</p>
+                                <p className="mt-0.5 text-[10px] text-zinc-500">Link each reply number to the step that should be sent next.</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleAddMenuOption}
+                                className="flex items-center gap-1 rounded-lg border border-emerald-900/60 bg-emerald-950/30 px-2.5 py-1.5 text-[10px] font-bold text-emerald-400 hover:bg-emerald-950/50 cursor-pointer"
+                              >
+                                <Plus className="h-3 w-3" /> Add Option
+                              </button>
+                            </div>
+
+                            {(activeStepEdit.options || []).length === 0 && (
+                              <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-[10px] text-amber-300">
+                                Add at least one numbered option before saving this menu step.
+                              </div>
+                            )}
+
+                            <div className="space-y-2">
+                              {(activeStepEdit.options || []).map((option, optionIndex) => (
+                                <div key={`editor_option_${optionIndex}`} className="grid grid-cols-1 gap-2 rounded-lg border border-zinc-800 p-2 sm:grid-cols-[80px_minmax(160px,1fr)_minmax(220px,1.3fr)_auto]">
+                                  <div>
+                                    <span className="mb-1 block text-[9px] font-bold uppercase tracking-wider text-zinc-600">Reply Key</span>
+                                    <input
+                                      type="text"
+                                      value={option.key}
+                                      onChange={(event) => handleUpdateMenuOption(optionIndex, { key: event.target.value })}
+                                      placeholder="1"
+                                      className="w-full rounded-lg border border-zinc-800 bg-[#0c0c0e] p-2 font-mono text-zinc-100 outline-none focus:border-emerald-500"
+                                    />
+                                  </div>
+                                  <div>
+                                    <span className="mb-1 block text-[9px] font-bold uppercase tracking-wider text-zinc-600">Option Label</span>
+                                    <input
+                                      type="text"
+                                      value={option.text}
+                                      onChange={(event) => handleUpdateMenuOption(optionIndex, { text: event.target.value })}
+                                      placeholder="I am looking for a job"
+                                      className="w-full rounded-lg border border-zinc-800 bg-[#0c0c0e] p-2 text-zinc-100 outline-none focus:border-emerald-500"
+                                    />
+                                  </div>
+                                  <div>
+                                    <span className="mb-1 block text-[9px] font-bold uppercase tracking-wider text-zinc-600">Next Step</span>
+                                    <select
+                                      value={option.nextStepId}
+                                      onChange={(event) => handleUpdateMenuOption(optionIndex, { nextStepId: event.target.value })}
+                                      className="w-full rounded-lg border border-zinc-800 bg-[#0c0c0e] p-2 text-zinc-200 outline-none focus:border-emerald-500"
+                                    >
+                                      <option value="">Select the next step...</option>
+                                      {wfForm.steps.map((step, stepIndex) => (
+                                        <option key={step.id} value={step.id}>
+                                          #{stepIndex + 1}{stepIndex === 0 ? " Main Menu" : ""} · {step.type} · {String(step.questionText || "Untitled").replace(/\s+/g, " ").slice(0, 52)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div className="flex items-end">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveMenuOption(optionIndex)}
+                                      className="rounded-lg border border-rose-900/50 bg-rose-950/20 p-2 text-rose-400 hover:bg-rose-950/40 cursor-pointer"
+                                      title="Remove option"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            <p className="text-[10px] text-zinc-500">
+                              Back option tip: create reply key <span className="font-mono text-emerald-400">0</span> and select <span className="text-sky-400">#1 Main Menu</span> as its next step.
+                            </p>
+                          </div>
+                        )}
+
+                        {(activeStepEdit.type === "question" || activeStepEdit.type === "capture_text") && (
+                          <div>
+                            <span className="text-zinc-400 block mb-1">Next Step After the Customer Answers</span>
+                            <select
+                              value={activeStepEdit.nextStepId || ""}
+                              onChange={(event) => setActiveStepEdit({ ...activeStepEdit, nextStepId: event.target.value || undefined })}
+                              className="w-full border border-zinc-800 bg-[#09090b] text-zinc-200 p-2 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                            >
+                              <option value="">Finish workflow after this answer</option>
+                              {wfForm.steps.map((step, stepIndex) => (
+                                <option key={step.id} value={step.id}>
+                                  #{stepIndex + 1}{stepIndex === 0 ? " Main Menu" : ""} · {step.type} · {String(step.questionText || "Untitled").replace(/\s+/g, " ").slice(0, 58)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {activeStepEdit.type === "handover" && (
+                          <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-[10px] text-amber-300">
+                            When a menu routes here, this message is sent and the conversation changes to Recruiter Handover. AI and workflows remain paused.
+                          </div>
+                        )}
+
+                        {activeStepEdit.type === "end_workflow" && (
+                          <div className="rounded-lg border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 text-[10px] text-emerald-300">
+                            When a route reaches this step, its message is sent and the workflow session ends.
+                          </div>
+                        )}
+
                         <div className="flex justify-end gap-2.5">
                           <button
+                            type="button"
                             onClick={() => setActiveStepEdit(null)}
                             className="bg-zinc-900 border border-zinc-800 text-zinc-300 px-3 py-1.5 rounded-lg font-semibold hover:bg-zinc-800 cursor-pointer"
                           >
                             Cancel
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleSaveStepInWf(activeStepEdit)}
                             className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-lg font-semibold transition shadow-xs cursor-pointer"
                           >

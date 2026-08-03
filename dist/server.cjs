@@ -3245,6 +3245,88 @@ function normalizeWorkflowStartMode(value) {
 function normalizeWorkflowTriggerKeyword(value) {
   return String(value || "").trim().toLowerCase();
 }
+var WORKFLOW_STEP_TYPES = /* @__PURE__ */ new Set([
+  "question",
+  "menu",
+  "capture_text",
+  "end_workflow",
+  "handover"
+]);
+function parseAndValidateWorkflowSteps(value) {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return { steps: null, serialized: null, error: "Workflow steps contain invalid JSON." };
+    }
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    return { steps: null, serialized: null, error: "Add at least one workflow step." };
+  }
+  const normalized = [];
+  const stepIds = /* @__PURE__ */ new Set();
+  for (let index = 0; index < parsed.length; index += 1) {
+    const rawStep = parsed[index];
+    const stepNumber = index + 1;
+    const id = String(rawStep?.id || "").trim();
+    const type = String(rawStep?.type || "").trim();
+    const questionText = String(rawStep?.questionText || "").trim();
+    if (!id) return { steps: null, serialized: null, error: `Step #${stepNumber} requires an ID.` };
+    if (stepIds.has(id)) return { steps: null, serialized: null, error: `Step #${stepNumber} uses a duplicate ID.` };
+    if (!WORKFLOW_STEP_TYPES.has(type)) {
+      return { steps: null, serialized: null, error: `Step #${stepNumber} has an unsupported type.` };
+    }
+    if (!questionText) {
+      return { steps: null, serialized: null, error: `Step #${stepNumber} requires WhatsApp message text.` };
+    }
+    stepIds.add(id);
+    const step = { id, type, questionText };
+    if (type === "menu") {
+      if (!Array.isArray(rawStep.options) || rawStep.options.length === 0) {
+        return { steps: null, serialized: null, error: `Step #${stepNumber} is a menu but has no options.` };
+      }
+      const optionKeys = /* @__PURE__ */ new Set();
+      step.options = rawStep.options.map((rawOption, optionIndex) => {
+        const option = rawOption;
+        const key = String(option?.key || "").trim();
+        const normalizedKey = key.toLowerCase();
+        const text2 = String(option?.text || "").trim();
+        const nextStepId = String(option?.nextStepId || "").trim();
+        const optionName = `Step #${stepNumber}, option #${optionIndex + 1}`;
+        if (!key) throw new Error(`${optionName} requires a reply key such as 1 or 0.`);
+        if (optionKeys.has(normalizedKey)) throw new Error(`${optionName} duplicates reply key '${key}'.`);
+        if (!text2) throw new Error(`${optionName} requires a label.`);
+        if (!nextStepId) throw new Error(`${optionName} requires a next step.`);
+        optionKeys.add(normalizedKey);
+        return { key, text: text2, nextStepId };
+      });
+    } else if (type === "question" || type === "capture_text") {
+      const variableName = String(rawStep.variableName || "").trim();
+      const nextStepId = String(rawStep.nextStepId || "").trim();
+      if (variableName) step.variableName = variableName;
+      if (nextStepId) step.nextStepId = nextStepId;
+    }
+    normalized.push(step);
+  }
+  for (let index = 0; index < normalized.length; index += 1) {
+    const step = normalized[index];
+    const stepNumber = index + 1;
+    if (step.nextStepId && !stepIds.has(step.nextStepId)) {
+      return { steps: null, serialized: null, error: `Step #${stepNumber} points to a missing next step.` };
+    }
+    for (const option of step.options || []) {
+      if (!stepIds.has(option.nextStepId)) {
+        return {
+          steps: null,
+          serialized: null,
+          error: `Step #${stepNumber}, option '${option.key}' points to a missing next step.`
+        };
+      }
+    }
+  }
+  return { steps: normalized, serialized: JSON.stringify(normalized), error: null };
+}
 function validateWorkflowStartConfiguration(params) {
   if (!String(params.name || "").trim() || !String(params.welcomeMessage || "").trim() || params.steps === void 0 || params.steps === null) {
     return "Workflow name, welcome message, and steps are required.";
@@ -3293,6 +3375,15 @@ app.post("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req, res
   if (validationError) {
     return res.status(400).json({ error: validationError });
   }
+  let stepValidation;
+  try {
+    stepValidation = parseAndValidateWorkflowSteps(steps);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Invalid workflow step routing." });
+  }
+  if (stepValidation.error) {
+    return res.status(400).json({ error: stepValidation.error });
+  }
   const isDefault = startMode === "default";
   const restartClosed = isDefault && Boolean(restartOnClosedMessage);
   const fallbackUnmatched = isDefault && Boolean(fallbackOnUnmatchedMessage);
@@ -3316,7 +3407,7 @@ app.post("/api/whatsapp_numbers/:id/workflows", authenticateJWT, async (req, res
         fallbackOnUnmatchedMessage: fallbackUnmatched,
         welcomeMessage: String(welcomeMessage).trim(),
         isActive: isActive !== void 0 ? Boolean(isActive) : true,
-        steps: typeof steps === "string" ? steps : JSON.stringify(steps)
+        steps: stepValidation.serialized
       }).returning();
       return created;
     });
@@ -3373,6 +3464,15 @@ app.put("/api/whatsapp_numbers/:id/workflows/:workflowId", authenticateJWT, asyn
     if (validationError) {
       return res.status(400).json({ error: validationError });
     }
+    let stepValidation;
+    try {
+      stepValidation = parseAndValidateWorkflowSteps(mergedSteps);
+    } catch (error) {
+      return res.status(400).json({ error: error.message || "Invalid workflow step routing." });
+    }
+    if (stepValidation.error) {
+      return res.status(400).json({ error: stepValidation.error });
+    }
     const isDefault = startMode === "default";
     const restartClosed = isDefault && Boolean(
       req.body.restartOnClosedMessage !== void 0 ? req.body.restartOnClosedMessage : existing.restartOnClosedMessage
@@ -3402,9 +3502,7 @@ app.put("/api/whatsapp_numbers/:id/workflows/:workflowId", authenticateJWT, asyn
         welcomeMessage: String(mergedWelcome).trim()
       };
       if (req.body.isActive !== void 0) updates.isActive = Boolean(req.body.isActive);
-      if (req.body.steps !== void 0) {
-        updates.steps = typeof req.body.steps === "string" ? req.body.steps : JSON.stringify(req.body.steps);
-      }
+      updates.steps = stepValidation.serialized;
       const [saved] = await tx.update(schema_exports.workflows).set(updates).where((0, import_drizzle_orm2.and)(
         (0, import_drizzle_orm2.eq)(schema_exports.workflows.id, workflowId),
         (0, import_drizzle_orm2.eq)(schema_exports.workflows.whatsappNumberId, numberId)
@@ -4657,7 +4755,7 @@ ${welcomeStep.questionText}`
       } else {
         validReply = false;
       }
-    } else if (currentStep.type === "question") {
+    } else if (currentStep.type === "question" || currentStep.type === "capture_text") {
       capturedData[currentStep.id] = incomingText;
       if (currentStep.variableName) {
         const varName = currentStep.variableName;
@@ -4677,13 +4775,17 @@ ${welcomeStep.questionText}`
       }
     }
     if (!validReply) {
+      const looksLikeNumericMenuReply = /^\d+$/.test(textLower);
+      const welcomeHeader = String(wf.welcomeMessage || "").trim();
+      const welcomeMenuReply = [welcomeHeader, currentStep.questionText].filter(Boolean).join("\n\n");
+      const invalidNumberReply = `Sorry, I didn\u2019t understand that. Please reply with one of the numbers shown below.
+
+${currentStep.questionText}`;
       await sendWorkflowWhatsAppTextMessage({
         conversationId: convId,
         whatsappNumberId: numId,
         contactId,
-        content: `Sorry, I didn\u2019t understand that. Please reply with one of the numbers shown below.
-
-${currentStep.questionText}`
+        content: looksLikeNumericMenuReply ? invalidNumberReply : welcomeMenuReply
       });
       return true;
     }
