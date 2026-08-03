@@ -72,6 +72,9 @@ app.get("/api/health", (req, res) => {
     unassignedEscalationMinutes: UNASSIGNED_ESCALATION_MINUTES,
     suspiciousLoginThreshold: SECURITY_SUSPICIOUS_LOGIN_THRESHOLD,
     suspiciousLoginWindowMinutes: SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES,
+    whatsappTypingIndicatorEnabled: WHATSAPP_TYPING_INDICATOR_ENABLED,
+    automationTypingDelayMinMs: AUTOMATION_TYPING_DELAY_MIN_MS,
+    automationTypingDelayMaxMs: AUTOMATION_TYPING_DELAY_MAX_MS,
     time: new Date().toISOString(),
   });
 });
@@ -93,6 +96,20 @@ if (process.env.GEMINI_API_KEY) {
 // --- META WHATSAPP CLOUD API HELPERS ---
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 const META_API_TIMEOUT_MS = Number(process.env.META_API_TIMEOUT_MS || 15000);
+const WHATSAPP_TYPING_INDICATOR_ENABLED =
+  String(process.env.WHATSAPP_TYPING_INDICATOR_ENABLED || "true").toLowerCase() !== "false";
+const configuredAutomationTypingDelayMinMs = Number(
+  process.env.AUTOMATION_TYPING_DELAY_MIN_MS || 900,
+);
+const AUTOMATION_TYPING_DELAY_MIN_MS = Number.isFinite(configuredAutomationTypingDelayMinMs)
+  ? Math.min(5000, Math.max(0, Math.floor(configuredAutomationTypingDelayMinMs)))
+  : 900;
+const configuredAutomationTypingDelayMaxMs = Number(
+  process.env.AUTOMATION_TYPING_DELAY_MAX_MS || 2200,
+);
+const AUTOMATION_TYPING_DELAY_MAX_MS = Number.isFinite(configuredAutomationTypingDelayMaxMs)
+  ? Math.min(8000, Math.max(AUTOMATION_TYPING_DELAY_MIN_MS, Math.floor(configuredAutomationTypingDelayMaxMs)))
+  : Math.max(AUTOMATION_TYPING_DELAY_MIN_MS, 2200);
 const configuredMessageRetryMaxAttempts = Number(process.env.MESSAGE_RETRY_MAX_ATTEMPTS || 3);
 const MESSAGE_RETRY_MAX_ATTEMPTS = Number.isFinite(configuredMessageRetryMaxAttempts)
   ? Math.min(10, Math.max(1, Math.floor(configuredMessageRetryMaxAttempts)))
@@ -526,6 +543,13 @@ async function sendAutomatedAIWhatsAppText(params: {
   }
 
   try {
+    await prepareAutomatedWhatsAppReply({
+      phoneNumberId: params.whatsappNumber.phoneNumberId,
+      accessToken: params.whatsappNumber.accessToken,
+      inboundMetaMessageId: params.replyToMetaMessageId || null,
+      content,
+    });
+
     const metaResult = await sendWhatsAppTextMessage({
       phoneNumberId: params.whatsappNumber.phoneNumberId,
       accessToken: params.whatsappNumber.accessToken,
@@ -1030,6 +1054,82 @@ async function verifyMetaPhoneNumber(params: {
   }
 
   return data;
+}
+
+function wait(milliseconds: number) {
+  return new Promise<void>(resolve => setTimeout(resolve, Math.max(0, milliseconds)));
+}
+
+function getNaturalAutomationTypingDelayMs(content: string) {
+  const normalizedLength = String(content || "").trim().length;
+  const lengthBasedDelay = AUTOMATION_TYPING_DELAY_MIN_MS + Math.min(1400, normalizedLength * 6);
+  return Math.min(
+    AUTOMATION_TYPING_DELAY_MAX_MS,
+    Math.max(AUTOMATION_TYPING_DELAY_MIN_MS, lengthBasedDelay),
+  );
+}
+
+async function sendWhatsAppTypingIndicator(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  inboundMetaMessageId?: string | null;
+}) {
+  if (!WHATSAPP_TYPING_INDICATOR_ENABLED) return false;
+
+  const phoneNumberId = String(params.phoneNumberId || "").trim();
+  const accessToken = String(params.accessToken || "").trim();
+  const inboundMetaMessageId = String(params.inboundMetaMessageId || "").trim();
+
+  if (!phoneNumberId || !accessToken || !inboundMetaMessageId) return false;
+
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${phoneNumberId}/messages`;
+  const response = await fetch(url, {
+    method: "POST",
+    signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      status: "read",
+      message_id: inboundMetaMessageId,
+      typing_indicator: { type: "text" },
+    }),
+  });
+
+  const data = await parseMetaResponse(response);
+  if (!response.ok) {
+    throwMetaApiError(data, response.status);
+  }
+
+  return true;
+}
+
+async function prepareAutomatedWhatsAppReply(params: {
+  phoneNumberId: string;
+  accessToken: string;
+  inboundMetaMessageId?: string | null;
+  content: string;
+}) {
+  let indicatorShown = false;
+  try {
+    indicatorShown = await sendWhatsAppTypingIndicator({
+      phoneNumberId: params.phoneNumberId,
+      accessToken: params.accessToken,
+      inboundMetaMessageId: params.inboundMetaMessageId || null,
+    });
+  } catch (error) {
+    // Typing is a best-effort UX feature. A typing failure must never block the reply.
+    console.warn(
+      `WhatsApp typing indicator failed for inbound message ${params.inboundMetaMessageId || "unknown"}:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  if (indicatorShown) {
+    await wait(getNaturalAutomationTypingDelayMs(params.content));
+  }
 }
 
 async function sendWhatsAppTextMessage(params: {
@@ -1744,6 +1844,7 @@ async function sendWorkflowWhatsAppTextMessage(params: {
   whatsappNumberId: number;
   contactId: number;
   content: string;
+  replyToMetaMessageId?: string | null;
 }) {
   const content = String(params.content || "").trim();
   if (!content) {
@@ -1828,6 +1929,13 @@ async function sendWorkflowWhatsAppTextMessage(params: {
 
   let metaResult: any;
   try {
+    await prepareAutomatedWhatsAppReply({
+      phoneNumberId: whatsappNumber.phoneNumberId,
+      accessToken: whatsappNumber.accessToken,
+      inboundMetaMessageId: params.replyToMetaMessageId || null,
+      content,
+    });
+
     metaResult = await sendWhatsAppTextMessage({
       phoneNumberId: whatsappNumber.phoneNumberId,
       accessToken: whatsappNumber.accessToken,
@@ -5653,6 +5761,7 @@ async function runWorkflowStep(
   incomingText: string,
   contactId: number,
   defaultStartReason: DefaultWorkflowStartReason = null,
+  inboundMetaMessageId?: string | null,
 ) {
   try {
     // 1. Get active session
@@ -5758,6 +5867,7 @@ async function runWorkflowStep(
           whatsappNumberId: numId,
           contactId,
           content: `${wf.welcomeMessage}\n\n${welcomeStep.questionText}`,
+          replyToMetaMessageId: inboundMetaMessageId || null,
         });
       } catch (deliveryError) {
         await db.delete(schema.workflowSessions)
@@ -5799,6 +5909,7 @@ async function runWorkflowStep(
         whatsappNumberId: numId,
         contactId,
         content: "Workflow stopped. Handing you over to a live recruiter.",
+        replyToMetaMessageId: inboundMetaMessageId || null,
       });
 
       await db.update(schema.workflowSessions)
@@ -5874,6 +5985,7 @@ async function runWorkflowStep(
         content: looksLikeNumericMenuReply
           ? invalidNumberReply
           : welcomeMenuReply,
+        replyToMetaMessageId: inboundMetaMessageId || null,
       });
       return true;
     }
@@ -5895,6 +6007,7 @@ async function runWorkflowStep(
         whatsappNumberId: numId,
         contactId,
         content: endText,
+        replyToMetaMessageId: inboundMetaMessageId || null,
       });
 
       await db.update(schema.workflowSessions)
@@ -5916,6 +6029,7 @@ async function runWorkflowStep(
         whatsappNumberId: numId,
         contactId,
         content: nextStep.questionText,
+        replyToMetaMessageId: inboundMetaMessageId || null,
       });
 
       await db.update(schema.workflowSessions)
@@ -6427,6 +6541,7 @@ async function processInboundAutomation(params: {
       params.incomingText,
       params.contactId,
       params.defaultWorkflowStartReason || null,
+      params.inboundMetaMessageId || null,
     );
     if (workflowHandled) return;
 

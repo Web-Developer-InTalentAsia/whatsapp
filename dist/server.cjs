@@ -569,6 +569,9 @@ app.get("/api/health", (req, res) => {
     unassignedEscalationMinutes: UNASSIGNED_ESCALATION_MINUTES,
     suspiciousLoginThreshold: SECURITY_SUSPICIOUS_LOGIN_THRESHOLD,
     suspiciousLoginWindowMinutes: SECURITY_SUSPICIOUS_LOGIN_WINDOW_MINUTES,
+    whatsappTypingIndicatorEnabled: WHATSAPP_TYPING_INDICATOR_ENABLED,
+    automationTypingDelayMinMs: AUTOMATION_TYPING_DELAY_MIN_MS,
+    automationTypingDelayMaxMs: AUTOMATION_TYPING_DELAY_MAX_MS,
     time: (/* @__PURE__ */ new Date()).toISOString()
   });
 });
@@ -585,6 +588,15 @@ if (process.env.GEMINI_API_KEY) {
 }
 var META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
 var META_API_TIMEOUT_MS = Number(process.env.META_API_TIMEOUT_MS || 15e3);
+var WHATSAPP_TYPING_INDICATOR_ENABLED = String(process.env.WHATSAPP_TYPING_INDICATOR_ENABLED || "true").toLowerCase() !== "false";
+var configuredAutomationTypingDelayMinMs = Number(
+  process.env.AUTOMATION_TYPING_DELAY_MIN_MS || 900
+);
+var AUTOMATION_TYPING_DELAY_MIN_MS = Number.isFinite(configuredAutomationTypingDelayMinMs) ? Math.min(5e3, Math.max(0, Math.floor(configuredAutomationTypingDelayMinMs))) : 900;
+var configuredAutomationTypingDelayMaxMs = Number(
+  process.env.AUTOMATION_TYPING_DELAY_MAX_MS || 2200
+);
+var AUTOMATION_TYPING_DELAY_MAX_MS = Number.isFinite(configuredAutomationTypingDelayMaxMs) ? Math.min(8e3, Math.max(AUTOMATION_TYPING_DELAY_MIN_MS, Math.floor(configuredAutomationTypingDelayMaxMs))) : Math.max(AUTOMATION_TYPING_DELAY_MIN_MS, 2200);
 var configuredMessageRetryMaxAttempts = Number(process.env.MESSAGE_RETRY_MAX_ATTEMPTS || 3);
 var MESSAGE_RETRY_MAX_ATTEMPTS = Number.isFinite(configuredMessageRetryMaxAttempts) ? Math.min(10, Math.max(1, Math.floor(configuredMessageRetryMaxAttempts))) : 3;
 var configuredMessageRetryInterval = Number(process.env.MESSAGE_RETRY_MIN_INTERVAL_SECONDS || 10);
@@ -876,6 +888,12 @@ async function sendAutomatedAIWhatsAppText(params) {
     throw error;
   }
   try {
+    await prepareAutomatedWhatsAppReply({
+      phoneNumberId: params.whatsappNumber.phoneNumberId,
+      accessToken: params.whatsappNumber.accessToken,
+      inboundMetaMessageId: params.replyToMetaMessageId || null,
+      content
+    });
     const metaResult = await sendWhatsAppTextMessage({
       phoneNumberId: params.whatsappNumber.phoneNumberId,
       accessToken: params.whatsappNumber.accessToken,
@@ -1266,6 +1284,62 @@ async function verifyMetaPhoneNumber(params) {
     throwMetaApiError(data, response.status);
   }
   return data;
+}
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, milliseconds)));
+}
+function getNaturalAutomationTypingDelayMs(content) {
+  const normalizedLength = String(content || "").trim().length;
+  const lengthBasedDelay = AUTOMATION_TYPING_DELAY_MIN_MS + Math.min(1400, normalizedLength * 6);
+  return Math.min(
+    AUTOMATION_TYPING_DELAY_MAX_MS,
+    Math.max(AUTOMATION_TYPING_DELAY_MIN_MS, lengthBasedDelay)
+  );
+}
+async function sendWhatsAppTypingIndicator(params) {
+  if (!WHATSAPP_TYPING_INDICATOR_ENABLED) return false;
+  const phoneNumberId = String(params.phoneNumberId || "").trim();
+  const accessToken = String(params.accessToken || "").trim();
+  const inboundMetaMessageId = String(params.inboundMetaMessageId || "").trim();
+  if (!phoneNumberId || !accessToken || !inboundMetaMessageId) return false;
+  const url = `https://graph.facebook.com/${META_GRAPH_VERSION}/${phoneNumberId}/messages`;
+  const response = await fetch(url, {
+    method: "POST",
+    signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      status: "read",
+      message_id: inboundMetaMessageId,
+      typing_indicator: { type: "text" }
+    })
+  });
+  const data = await parseMetaResponse(response);
+  if (!response.ok) {
+    throwMetaApiError(data, response.status);
+  }
+  return true;
+}
+async function prepareAutomatedWhatsAppReply(params) {
+  let indicatorShown = false;
+  try {
+    indicatorShown = await sendWhatsAppTypingIndicator({
+      phoneNumberId: params.phoneNumberId,
+      accessToken: params.accessToken,
+      inboundMetaMessageId: params.inboundMetaMessageId || null
+    });
+  } catch (error) {
+    console.warn(
+      `WhatsApp typing indicator failed for inbound message ${params.inboundMetaMessageId || "unknown"}:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+  if (indicatorShown) {
+    await wait(getNaturalAutomationTypingDelayMs(params.content));
+  }
 }
 async function sendWhatsAppTextMessage(params) {
   const phoneNumberId = String(params.phoneNumberId || "").trim();
@@ -1860,6 +1934,12 @@ async function sendWorkflowWhatsAppTextMessage(params) {
   }
   let metaResult;
   try {
+    await prepareAutomatedWhatsAppReply({
+      phoneNumberId: whatsappNumber.phoneNumberId,
+      accessToken: whatsappNumber.accessToken,
+      inboundMetaMessageId: params.replyToMetaMessageId || null,
+      content
+    });
     metaResult = await sendWhatsAppTextMessage({
       phoneNumberId: whatsappNumber.phoneNumberId,
       accessToken: whatsappNumber.accessToken,
@@ -4628,7 +4708,7 @@ app.post("/api/ai-suggestions/train", authenticateJWT, async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 });
-async function runWorkflowStep(convId, numId, incomingText, contactId, defaultStartReason = null) {
+async function runWorkflowStep(convId, numId, incomingText, contactId, defaultStartReason = null, inboundMetaMessageId) {
   try {
     let [session] = await db.select().from(schema_exports.workflowSessions).where((0, import_drizzle_orm2.and)(
       (0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.conversationId, convId),
@@ -4699,7 +4779,8 @@ async function runWorkflowStep(convId, numId, incomingText, contactId, defaultSt
           contactId,
           content: `${wf2.welcomeMessage}
 
-${welcomeStep.questionText}`
+${welcomeStep.questionText}`,
+          replyToMetaMessageId: inboundMetaMessageId || null
         });
       } catch (deliveryError) {
         await db.delete(schema_exports.workflowSessions).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
@@ -4731,7 +4812,8 @@ ${welcomeStep.questionText}`
         conversationId: convId,
         whatsappNumberId: numId,
         contactId,
-        content: "Workflow stopped. Handing you over to a live recruiter."
+        content: "Workflow stopped. Handing you over to a live recruiter.",
+        replyToMetaMessageId: inboundMetaMessageId || null
       });
       await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
       await db.update(schema_exports.conversations).set({ status: "human_handover", lastMessageAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.conversations.id, convId));
@@ -4785,7 +4867,8 @@ ${currentStep.questionText}`;
         conversationId: convId,
         whatsappNumberId: numId,
         contactId,
-        content: looksLikeNumericMenuReply ? invalidNumberReply : welcomeMenuReply
+        content: looksLikeNumericMenuReply ? invalidNumberReply : welcomeMenuReply,
+        replyToMetaMessageId: inboundMetaMessageId || null
       });
       return true;
     }
@@ -4797,7 +4880,8 @@ ${currentStep.questionText}`;
         conversationId: convId,
         whatsappNumberId: numId,
         contactId,
-        content: endText
+        content: endText,
+        replyToMetaMessageId: inboundMetaMessageId || null
       });
       await db.update(schema_exports.workflowSessions).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
       await db.update(schema_exports.contacts).set({ capturedAnswers: JSON.stringify(capturedData) }).where((0, import_drizzle_orm2.eq)(schema_exports.contacts.id, contactId));
@@ -4807,7 +4891,8 @@ ${currentStep.questionText}`;
         conversationId: convId,
         whatsappNumberId: numId,
         contactId,
-        content: nextStep.questionText
+        content: nextStep.questionText,
+        replyToMetaMessageId: inboundMetaMessageId || null
       });
       await db.update(schema_exports.workflowSessions).set({ currentStepId: nextStep.id, updatedAt: /* @__PURE__ */ new Date() }).where((0, import_drizzle_orm2.eq)(schema_exports.workflowSessions.id, session.id));
       if (nextStep.type === "handover") {
@@ -5179,7 +5264,8 @@ async function processInboundAutomation(params) {
       params.whatsappNumberId,
       params.incomingText,
       params.contactId,
-      params.defaultWorkflowStartReason || null
+      params.defaultWorkflowStartReason || null,
+      params.inboundMetaMessageId || null
     );
     if (workflowHandled) return;
     if (textualInbound && isDirectHumanHandoverRequest(params.incomingText)) {
